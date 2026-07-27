@@ -159,7 +159,8 @@ public class MCPWriteObjectTool implements MCPTool
                 + "multi-select list values accept \"|\" or \",\" separators; booleans accept 0, 1, true "
                 + "or false).")
             .string(TITLE_PARAM, "Optional new title for the document holding the object, applied in the "
-                + "same save (create and update alike). Kept unchanged when omitted.")
+                + "same save (create and update alike). Kept unchanged when omitted. Pass an empty string "
+                + "to clear the title.")
             .bool(HIDDEN_PARAM, "Optional: set the hidden flag of the document holding the object, "
                 + "applied in the same save. Kept unchanged when omitted.")
             .string(BASE_VERSION_PARAM, "The document version you read (shown by get_document and "
@@ -216,6 +217,7 @@ public class MCPWriteObjectTool implements MCPTool
                 Multi-select list values accept "|" or "," separators (e.g. "News|Personal");
                 booleans accept 0, 1, true or false. Unknown fields are refused (the error lists
                 the class's fields); Password and computed fields cannot be set with this tool.
+                An empty fields map ({}) creates a marker object carrying only the class defaults.
                 title sets the DOCUMENT's title in the same save (create and update alike), so
                 an object-first page creation names its page without a second call; omitted, the
                 title stays untouched. hidden likewise sets the DOCUMENT's hidden flag in the
@@ -254,6 +256,11 @@ public class MCPWriteObjectTool implements MCPTool
 
         try {
             Request parsed = parseRequest(args);
+            if (parsed.objectNumber() != null && parsed.fields().isEmpty() && parsed.title() == null
+                && parsed.hidden() == null) {
+                throw new IllegalArgumentException(
+                    "Error: nothing to change - provide at least one field, a title or a hidden flag.");
+            }
 
             DocumentReference ref = MCPWriteSupport.resolveForEdit(this.documentAccess, parsed.reference());
             DocumentReference classRef =
@@ -282,12 +289,31 @@ public class MCPWriteObjectTool implements MCPTool
             PARAMS.parser().requireString(args, REFERENCE_PARAM),
             PARAMS.parser().requireString(args, CLASS_PARAM),
             PARAMS.parser().integer(args, OBJECT_PARAM),
-            PARAMS.parser().requireStringMap(args, FIELDS_PARAM),
-            PARAMS.parser().string(args, TITLE_PARAM),
+            requireFieldsPresent(args),
+            PARAMS.parser().stringOrEmpty(args, TITLE_PARAM),
             PARAMS.parser().boolOrNull(args, HIDDEN_PARAM),
             PARAMS.parser().string(args, BASE_VERSION_PARAM),
             PARAMS.parser().string(args, COMMENT_PARAM),
             PARAMS.parser().bool(args, MAJOR_PARAM));
+    }
+
+    /**
+     * Reads the {@code fields} parameter, enforcing its presence but allowing an explicitly empty map:
+     * an object can be created carrying only the class defaults (a marker object), so emptiness is not
+     * an error here - the caller guards separately against an update call that changes nothing.
+     *
+     * @param args the tool call arguments
+     * @return the field entries, in call order, possibly empty
+     * @throws IllegalArgumentException with the agent-facing message when the parameter is absent or not
+     *     an object with only string values
+     */
+    private static Map<String, String> requireFieldsPresent(Map<String, Object> args)
+    {
+        if (args.get(FIELDS_PARAM) == null) {
+            throw new IllegalArgumentException(MCPToolSupport.ERROR_PREFIX + FIELDS_PARAM
+                + "' parameter is required.");
+        }
+        return PARAMS.parser().stringMap(args, FIELDS_PARAM);
     }
 
     /**
@@ -347,7 +373,8 @@ public class MCPWriteObjectTool implements MCPTool
                 MCPWriteSupport.buildComment(request.comment(), creating, changeSummary(applied, localClassName)),
                 MCPWriteSupport.isMinorEdit(creating, request.major()));
 
-            String statusLines = joinStatusLines(titleLine(creating, request.title() != null, titleChanged),
+            String statusLines = joinStatusLines(
+                MCPWriteSupport.titleLine(creating, titleChanged, request.title()),
                 MCPWriteSupport.hiddenLine(hiddenChanged, Boolean.TRUE.equals(request.hidden())));
             return MCPToolSupport.result(
                 buildSuccessResult(ref, creating, oldVersion, apiDoc.getVersion(), localClassName, applied,
@@ -412,24 +439,6 @@ public class MCPWriteObjectTool implements MCPTool
     }
 
     /**
-     * Builds the title echo of the success result the way {@code write_document} words it: {@code Title
-     * set.} for a creation given a title, {@code Title updated.} for an update whose title actually
-     * changed, nothing otherwise (omitted title, or a title identical to the current one).
-     *
-     * @param creatingDocument whether the document itself was created
-     * @param titleGiven whether a title argument was supplied
-     * @param titleChanged whether the title actually changed
-     * @return the title line, or {@code null} when the result carries none
-     */
-    private static String titleLine(boolean creatingDocument, boolean titleGiven, boolean titleChanged)
-    {
-        if (creatingDocument) {
-            return titleGiven ? "Title set." : null;
-        }
-        return titleChanged ? "Title updated." : null;
-    }
-
-    /**
      * Joins the title and hidden echoes of the success result into one newline-separated block, so the
      * result builder receives the applied status lines as a single value.
      *
@@ -448,7 +457,8 @@ public class MCPWriteObjectTool implements MCPTool
     /**
      * Builds the success result: what happened to which object, the version (transition), the names of
      * the fields set (names only - values are on the document, and the compare URL is the authoritative
-     * review), the title and hidden echoes when they were applied, and the review line.
+     * review; a defaults-only line replaces the list when no fields were set), the title and hidden
+     * echoes when they were applied, and the review line.
      *
      * @param ref the saved document's reference
      * @param creatingDocument whether the document itself was created
@@ -478,7 +488,11 @@ public class MCPWriteObjectTool implements MCPTool
         if (statusLines != null) {
             sb.append(NEW_LINE).append(statusLines);
         }
-        sb.append(NEW_LINE).append("Fields set: ").append(String.join(", ", applied.fieldNames()));
+        if (!applied.fieldNames().isEmpty()) {
+            sb.append(NEW_LINE).append("Fields set: ").append(String.join(", ", applied.fieldNames()));
+        } else if (applied.createdObject()) {
+            sb.append(NEW_LINE).append("No fields set - the object keeps the class defaults.");
+        }
         String urlLine = MCPWriteSupport.buildReviewLine(this.documentAccessBridge, this.logger, ref,
             creatingDocument, oldVersion, newVersion);
         if (urlLine != null) {

@@ -354,6 +354,64 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void emptyTitleClearsThePageTitle(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.setTitle("Old Title");
+        doc.newXObject(CLASS_REFERENCE, oldcore.getXWikiContext());
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, TITLE_KEY, "", BASE_VERSION_KEY, currentVersion(oldcore),
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        // An explicit empty title is a request to clear it, not an omitted parameter.
+        assertEquals("", saved.getTitle());
+        assertTrue(textOf(result).contains("Title cleared."), textOf(result));
+        assertFalse(textOf(result).contains("Title updated."), textOf(result));
+    }
+
+    @Test
+    void whitespaceOnlyTitleBehavesAsClear(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.setTitle("Old Title");
+        doc.newXObject(CLASS_REFERENCE, oldcore.getXWikiContext());
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, TITLE_KEY, "   ", BASE_VERSION_KEY, currentVersion(oldcore),
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        // The accessor trims, so a whitespace-only title is the explicit empty title: a clear.
+        assertEquals("", loadDocument(oldcore).getTitle());
+        assertTrue(textOf(result).contains("Title cleared."), textOf(result));
+    }
+
+    @Test
+    void clearingAnAlreadyEmptyTitleIsNotEchoed(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocumentWithObject(oldcore, "First");
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, TITLE_KEY, "", BASE_VERSION_KEY, currentVersion(oldcore),
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertEquals("", saved.getTitle());
+        assertEquals("Updated", saved.getXObject(CLASS_REFERENCE, 0).getStringValue(TITLE_FIELD));
+        // Clearing an already-empty title changes nothing, so no title line is echoed.
+        assertFalse(textOf(result).contains("Title"), textOf(result));
+    }
+
+    @Test
     void omittedTitleLeavesThePageTitleUntouched(MockitoOldcore oldcore) throws Exception
     {
         storeClassDocument(oldcore);
@@ -463,6 +521,80 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
         assertTrue(text.contains("Created document " + CANONICAL + " with Blog.BlogPostClass object 0"),
             text);
         assertTrue(text.contains("View: " + VIEW_URL), text);
+    }
+
+    @Test
+    void createsDocumentAndMarkerObjectWithEmptyFields(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            FIELDS_KEY, Map.of()));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertFalse(saved.isNew());
+        // The marker object exists carrying only the class defaults.
+        assertNotNull(saved.getXObject(CLASS_REFERENCE, 0));
+        assertTrue(textOf(result).contains("No fields set - the object keeps the class defaults."),
+            textOf(result));
+        assertFalse(textOf(result).contains("Fields set:"), textOf(result));
+    }
+
+    @Test
+    void createsMarkerObjectOnExistingDocumentWithEmptyFields(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocument(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            BASE_VERSION_KEY, currentVersion(oldcore), FIELDS_KEY, Map.of()));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        assertNotNull(loadDocument(oldcore).getXObject(CLASS_REFERENCE, 0));
+        assertTrue(textOf(result).contains("No fields set - the object keeps the class defaults."),
+            textOf(result));
+    }
+
+    @Test
+    void updateWithEmptyFieldsAndNothingElseRefused(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocumentWithObject(oldcore, "First");
+        String versionBefore = currentVersion(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, BASE_VERSION_KEY, versionBefore, FIELDS_KEY, Map.of()));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Error: nothing to change - provide at least one field, a title or a hidden flag.",
+            textOf(result));
+        // The guard fires at parse time: the reference is never resolved and nothing is saved.
+        verify(this.documentAccess, never()).resolveAndAuthorize(anyString(), any());
+        assertEquals(versionBefore, currentVersion(oldcore));
+        assertEquals("First", loadDocument(oldcore).getXObject(CLASS_REFERENCE, 0).getStringValue(TITLE_FIELD));
+    }
+
+    @Test
+    void updateWithEmptyFieldsAndHiddenSavesDocLevelChangeOnly(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocumentWithObject(oldcore, "First");
+        String versionBefore = currentVersion(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, HIDDEN_KEY, true, BASE_VERSION_KEY, versionBefore, FIELDS_KEY, Map.of()));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertTrue(saved.isHidden());
+        assertNotEquals(versionBefore, saved.getVersion());
+        // The object's own fields survive untouched: the save was doc-level only.
+        assertEquals("First", saved.getXObject(CLASS_REFERENCE, 0).getStringValue(TITLE_FIELD));
+        assertTrue(textOf(result).contains("Marked hidden."), textOf(result));
+        // No fields line at all on an update: the "class defaults" claim is only true for a new object.
+        assertFalse(textOf(result).contains("No fields set"), textOf(result));
+        assertFalse(textOf(result).contains("Fields set:"), textOf(result));
     }
 
     @Test
@@ -901,9 +1033,8 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
         McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF));
 
         assertEquals(Boolean.TRUE, result.isError());
-        String text = textOf(result);
-        assertTrue(text.contains(FIELDS_KEY), text);
-        assertTrue(text.contains("required"), text);
+        // Absent is refused outright; an explicitly empty map, by contrast, is a valid marker-object call.
+        assertEquals("Error: 'fields' parameter is required.", textOf(result));
         verify(this.documentAccess, never()).resolveAndAuthorize(anyString(), any());
     }
 

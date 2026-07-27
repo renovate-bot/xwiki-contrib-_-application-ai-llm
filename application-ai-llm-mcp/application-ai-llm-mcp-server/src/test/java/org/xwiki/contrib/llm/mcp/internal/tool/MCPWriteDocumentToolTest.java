@@ -372,6 +372,57 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void overwriteWithEmptyTitleClearsIt(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, "Old Title");
+        String currentVersion = loadDocument(oldcore).getVersion();
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, OLD_BODY,
+            BASE_VERSION_KEY, currentVersion, TITLE_KEY, ""));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        // An explicit empty title is a request to clear it, not an omitted parameter.
+        assertEquals("", saved.getTitle());
+        assertTrue(textOf(result).contains("Title cleared."), textOf(result));
+        assertFalse(textOf(result).contains("Title updated."), textOf(result));
+    }
+
+    @Test
+    void overwriteWithWhitespaceOnlyTitleBehavesAsClear(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, "Old Title");
+        String currentVersion = loadDocument(oldcore).getVersion();
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, OLD_BODY,
+            BASE_VERSION_KEY, currentVersion, TITLE_KEY, "   "));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        // The accessor trims, so a whitespace-only title is the explicit empty title: a clear.
+        assertEquals("", loadDocument(oldcore).getTitle());
+        assertTrue(textOf(result).contains("Title cleared."), textOf(result));
+    }
+
+    @Test
+    void clearingAnAlreadyEmptyTitleIsANoOp(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, null);
+        String currentVersion = loadDocument(oldcore).getVersion();
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, OLD_BODY,
+            BASE_VERSION_KEY, currentVersion, TITLE_KEY, ""));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        // Clearing an already-empty title changes nothing: with identical content, nothing is saved.
+        assertTrue(textOf(result).contains("Nothing was saved."), textOf(result));
+        assertEquals(currentVersion, loadDocument(oldcore).getVersion());
+    }
+
+    @Test
     void createWithHiddenTrueMarksThePageHidden(MockitoOldcore oldcore) throws Exception
     {
         when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), any(), any(), eq(true)))

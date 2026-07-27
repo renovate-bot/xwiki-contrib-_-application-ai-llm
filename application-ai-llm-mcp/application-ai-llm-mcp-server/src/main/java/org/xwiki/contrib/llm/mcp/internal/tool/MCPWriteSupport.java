@@ -551,6 +551,30 @@ final class MCPWriteSupport
     }
 
     /**
+     * Builds the title echo of a write tool's success result: the title is echoed ONLY when it changed
+     * ({@code Title set.} on a creating save, {@code Title updated.} on an updating one, and
+     * {@code Title cleared.} when the changed title is the explicit empty string), so an omitted
+     * argument or a value identical to the current title stays silent, on create and update alike. A
+     * new row's baseline title is already empty, so create-with-an-empty-title is not a change and
+     * stays silent too.
+     *
+     * @param creating whether the row was created rather than updated
+     * @param changed whether the title actually changed
+     * @param title the requested title, non-{@code null} when {@code changed}
+     * @return the echo line, or {@code null} when the result carries none
+     */
+    static String titleLine(boolean creating, boolean changed, String title)
+    {
+        if (!changed) {
+            return null;
+        }
+        if (title.isEmpty()) {
+            return "Title cleared.";
+        }
+        return creating ? "Title set." : "Title updated.";
+    }
+
+    /**
      * Builds the note line the content-writing tools append to a SUCCESS result when the saved body
      * contains a script macro ({@code {{velocity}}} or {@code {{groovy}}}, matched case-insensitively
      * on the brace-adjacent opening): the persisted source is not what users see, so the agent is

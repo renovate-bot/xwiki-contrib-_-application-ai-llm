@@ -155,6 +155,35 @@ class MCPToolSupportTest
     }
 
     @Test
+    void stringOrEmptyReturnsNullForAbsentParameter()
+    {
+        assertNull(PARAMS.stringOrEmpty(Map.of(), REF));
+    }
+
+    @Test
+    void stringOrEmptyTrimsPresentValue()
+    {
+        assertEquals("x", PARAMS.stringOrEmpty(Map.of(REF, "  x  "), REF));
+    }
+
+    @Test
+    void stringOrEmptyKeepsExplicitEmptyValueDistinctFromAbsent()
+    {
+        // The whole point of the accessor: an explicit empty value survives as "" instead of folding
+        // into the omitted-parameter null, so "clear this" and "leave this untouched" stay distinguishable.
+        assertEquals("", PARAMS.stringOrEmpty(Map.of(REF, ""), REF));
+        assertEquals("", PARAMS.stringOrEmpty(Map.of(REF, "   "), REF));
+    }
+
+    @Test
+    void stringOrEmptyRejectsNonStringValueWithAgentFacingError()
+    {
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+            () -> PARAMS.stringOrEmpty(Map.of(REF, 42), REF));
+        assertEquals("Error: 'reference' parameter must be a string.", thrown.getMessage());
+    }
+
+    @Test
     void requireStringEnforcesPresenceWithAgentFacingError()
     {
         assertEquals("Some.Page", PARAMS.requireString(Map.of(REF, "Some.Page"), REF));
@@ -187,6 +216,7 @@ class MCPToolSupportTest
     void readingParameterWithWrongTypeAccessorIsAProgrammerError()
     {
         assertThrows(IllegalStateException.class, () -> PARAMS.string(Map.of(), LIMIT));
+        assertThrows(IllegalStateException.class, () -> PARAMS.stringOrEmpty(Map.of(), LIMIT));
         assertThrows(IllegalStateException.class, () -> PARAMS.integer(Map.of(), REF));
         assertThrows(IllegalStateException.class, () -> PARAMS.bool(Map.of(), REF));
         assertThrows(IllegalStateException.class, () -> PARAMS.boolOrNull(Map.of(), REF));

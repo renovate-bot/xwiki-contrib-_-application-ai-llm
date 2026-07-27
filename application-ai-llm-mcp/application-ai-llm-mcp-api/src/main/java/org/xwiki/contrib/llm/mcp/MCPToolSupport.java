@@ -149,6 +149,21 @@ public final class MCPToolSupport
      */
     private static String optionalString(Map<String, Object> args, String key)
     {
+        return StringUtils.trimToNull(rawString(args, key));
+    }
+
+    /**
+     * Reads a string argument without any trimming, the shared type-validation step of the string
+     * accessors: key absent or JSON {@code null} maps to {@code null}, and a present non-string value is
+     * rejected with the agent-facing message.
+     *
+     * @param args the tool call arguments
+     * @param key the argument name
+     * @return the raw string value, or {@code null} when absent
+     * @throws IllegalArgumentException if the value is present but not a string
+     */
+    private static String rawString(Map<String, Object> args, String key)
+    {
         Object value = args.get(key);
         if (value == null) {
             return null;
@@ -156,7 +171,7 @@ public final class MCPToolSupport
         if (!(value instanceof String str)) {
             throw new IllegalArgumentException(ERROR_PREFIX + key + STRING_PARAM_ERROR_SUFFIX);
         }
-        return StringUtils.trimToNull(str);
+        return str;
     }
 
     /**
@@ -416,6 +431,28 @@ public final class MCPToolSupport
     {
         assertDeclared(key, ParamType.STRING);
         return optionalString(args, key);
+    }
+
+    /**
+     * Reads a declared string parameter, distinguishing a present-but-empty value from an absent one:
+     * the accessor for omitted-means-untouched parameters where an explicit empty value is itself
+     * meaningful (e.g. clearing a title). An absent parameter (or a JSON {@code null}) maps to
+     * {@code null}; a present value is trimmed and may be the empty string - unlike
+     * {@link #string(Map, String)}, which folds a blank value into {@code null}. The type validation is
+     * identical to {@link #string(Map, String)}.
+     *
+     * @param args the tool call arguments
+     * @param key the parameter name
+     * @return the trimmed value (possibly empty), or {@code null} when absent
+     * @throws IllegalArgumentException if the value is present but not a string
+     * @throws IllegalStateException if the parameter was not declared as a string
+     * @since 0.9.1
+     */
+    public String stringOrEmpty(Map<String, Object> args, String key)
+    {
+        assertDeclared(key, ParamType.STRING);
+        String value = rawString(args, key);
+        return value == null ? null : value.trim();
     }
 
     /**

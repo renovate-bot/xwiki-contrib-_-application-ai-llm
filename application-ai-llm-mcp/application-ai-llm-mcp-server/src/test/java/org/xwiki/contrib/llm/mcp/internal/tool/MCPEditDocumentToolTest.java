@@ -333,6 +333,57 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void emptyTitleClearsItAndCommentSaysRetitled(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, "body stays", "Old Title");
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, TITLE_KEY, ""));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        // An explicit empty title is a request to clear it, not an omitted parameter.
+        assertEquals("", saved.getTitle());
+        assertEquals("body stays", saved.getContent());
+        assertTrue(textOf(result).contains("Title cleared."), textOf(result));
+        assertFalse(textOf(result).contains("Title updated."), textOf(result));
+        // The generated version comment names any title change, clearing included.
+        verify(oldcore.getSpyXWiki()).saveDocument(any(XWikiDocument.class),
+            eq("[AI] 0 edits, retitled"), eq(true), any());
+    }
+
+    @Test
+    void whitespaceOnlyTitleBehavesAsClear(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, "body stays", "Old Title");
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, TITLE_KEY, "   "));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        // The accessor trims, so a whitespace-only title is the explicit empty title: a clear.
+        assertEquals("", loadDocument(oldcore).getTitle());
+        assertTrue(textOf(result).contains("Title cleared."), textOf(result));
+    }
+
+    @Test
+    void clearingAnAlreadyEmptyTitleIsANoOp(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, "body stays", null);
+        String versionBefore = loadDocument(oldcore).getVersion();
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, TITLE_KEY, ""));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        // A clearing call passes the at-least-one guard (title is present), but clearing an
+        // already-empty title changes nothing: the no-change guard fires and nothing is saved.
+        assertTrue(textOf(result).contains("No changes"), textOf(result));
+        assertEquals(versionBefore, loadDocument(oldcore).getVersion());
+    }
+
+    @Test
     void hiddenOnlyUnhideSavesAVersionedUnhide(MockitoOldcore oldcore) throws Exception
     {
         XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);

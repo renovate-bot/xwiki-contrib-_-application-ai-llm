@@ -220,7 +220,8 @@ public class MCPEditDocumentTool implements MCPTool
         }
         return MCPToolSupport.builder()
             .requiredString(REFERENCE_PARAM, referenceDescription)
-            .string(TITLE_PARAM, "Optional new title. May be set alone (retitle) or together with edits.")
+            .string(TITLE_PARAM, "Optional new title. May be set alone (retitle) or together with edits. "
+                + "Pass an empty string to clear the title.")
             .bool(HIDDEN_PARAM, "Optional: set the page's hidden flag (hidden pages are technical pages "
                 + "excluded from normal browsing and search). Kept unchanged when omitted.")
             .string(LOCALE_PARAM, "Edit a specific translation of the document, e.g. "
@@ -316,6 +317,7 @@ public class MCPEditDocumentTool implements MCPTool
                 Comment:     reference="Sandbox.WebHome", comment="fix typo in installation steps",
                              edits=[{"old_string":"teh","new_string":"the"}]
                 Retitle:     reference="Sandbox.WebHome", title="New Title"
+                             (title="" clears the title: the page falls back to its default name)
                 Hide page:   reference="Sandbox.WebHome", hidden=true
                              (hidden may be set alone or with edits; omitted, the flag is kept
                              unchanged)
@@ -338,7 +340,7 @@ public class MCPEditDocumentTool implements MCPTool
 
         try {
             String reference = PARAMS.parser().requireString(args, REFERENCE_PARAM);
-            String title = PARAMS.parser().string(args, TITLE_PARAM);
+            String title = PARAMS.parser().stringOrEmpty(args, TITLE_PARAM);
             Boolean hidden = PARAMS.parser().boolOrNull(args, HIDDEN_PARAM);
             Locale locale = MCPToolSupport.parseLocale(PARAMS.parser().string(args, LOCALE_PARAM), LOCALE_PARAM);
             String baseVersion = PARAMS.parser().string(args, BASE_VERSION_PARAM);
@@ -436,10 +438,10 @@ public class MCPEditDocumentTool implements MCPTool
                     Boolean.TRUE.equals(request.hidden()))),
             MCPWriteSupport.isMinorEdit(creating, request.major()));
 
-        SaveOutcome outcome = new SaveOutcome(ref, target.locale(), creating, request.title() != null,
+        SaveOutcome outcome = new SaveOutcome(ref, target.locale(), creating,
             titleChanged, hiddenChanged, oldVersion, apiDoc.getVersion(), request.edits().size(), newContent,
             appliedReplacements);
-        return MCPToolSupport.result(buildSuccessResult(outcome, request.hidden()));
+        return MCPToolSupport.result(buildSuccessResult(outcome, request));
     }
 
     /**
@@ -643,25 +645,27 @@ public class MCPEditDocumentTool implements MCPTool
     }
 
     /**
-     * Builds the success text of a save, from the outcome carrier plus the requested hidden flag (needed
-     * only for the echo wording of a changed flag).
+     * Builds the success text of a save, from the outcome carrier plus the request (consulted only for
+     * the wording of the applied title and hidden echoes).
      *
      * @param outcome the save outcome
-     * @param hidden the requested hidden flag, or {@code null} when the argument was omitted
+     * @param request the parsed arguments
      * @return the success text
      */
-    private String buildSuccessResult(SaveOutcome outcome, Boolean hidden)
+    private String buildSuccessResult(SaveOutcome outcome, Request request)
     {
         String canonicalRef = this.serializer.serialize(outcome.ref());
         String target = outcome.locale() == null ? MCPWriteSupport.DOCUMENT_NOUN
             : MCPWriteSupport.translationSubject(outcome.locale()) + " of ";
+        String titleEcho =
+            MCPWriteSupport.titleLine(outcome.creating(), outcome.titleChanged(), request.title());
         String hiddenEcho =
-            MCPWriteSupport.hiddenLine(outcome.hiddenChanged(), Boolean.TRUE.equals(hidden));
+            MCPWriteSupport.hiddenLine(outcome.hiddenChanged(), Boolean.TRUE.equals(request.hidden()));
         StringBuilder sb = new StringBuilder();
         if (outcome.creating()) {
-            appendCreateSummary(sb, outcome, target, canonicalRef, hiddenEcho);
+            appendCreateSummary(sb, outcome, target, canonicalRef, titleEcho, hiddenEcho);
         } else {
-            appendUpdateSummary(sb, outcome, target, canonicalRef, hiddenEcho);
+            appendUpdateSummary(sb, outcome, target, canonicalRef, titleEcho, hiddenEcho);
         }
 
         String urlLine = MCPWriteSupport.buildReviewLine(this.documentAccessBridge, this.logger, outcome.ref(),
@@ -690,15 +694,16 @@ public class MCPEditDocumentTool implements MCPTool
      * @param outcome the save outcome
      * @param target the noun phrase naming the written row
      * @param canonicalRef the canonical display reference
+     * @param titleEcho the title echo line, or {@code null} when the title did not change
      * @param hiddenEcho the hidden-flag echo line, or {@code null} when the flag did not change
      */
     private static void appendCreateSummary(StringBuilder sb, SaveOutcome outcome, String target,
-        String canonicalRef, String hiddenEcho)
+        String canonicalRef, String titleEcho, String hiddenEcho)
     {
         sb.append("Created ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
         sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion());
-        if (outcome.titleGiven()) {
-            sb.append(NEW_LINE).append("Title set.");
+        if (titleEcho != null) {
+            sb.append(NEW_LINE).append(titleEcho);
         }
         if (hiddenEcho != null) {
             sb.append(NEW_LINE).append(hiddenEcho);
@@ -713,10 +718,11 @@ public class MCPEditDocumentTool implements MCPTool
      * @param outcome the save outcome
      * @param target the noun phrase naming the written row
      * @param canonicalRef the canonical display reference
+     * @param titleEcho the title echo line, or {@code null} when the title did not change
      * @param hiddenEcho the hidden-flag echo line, or {@code null} when the flag did not change
      */
     private static void appendUpdateSummary(StringBuilder sb, SaveOutcome outcome, String target,
-        String canonicalRef, String hiddenEcho)
+        String canonicalRef, String titleEcho, String hiddenEcho)
     {
         sb.append("Updated ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
         sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.oldVersion()).append(" -> ")
@@ -727,8 +733,8 @@ public class MCPEditDocumentTool implements MCPTool
             sb.append(OPEN_PARENTHETICAL).append(totalReplacements).append(" replacements)");
         }
         sb.append(PERIOD);
-        if (outcome.titleChanged()) {
-            sb.append(" Title updated.");
+        if (titleEcho != null) {
+            sb.append(' ').append(titleEcho);
         }
         if (hiddenEcho != null) {
             sb.append(' ').append(hiddenEcho);
@@ -839,7 +845,6 @@ public class MCPEditDocumentTool implements MCPTool
      * @param ref the resolved document reference, used both for the canonical display reference and the review URL
      * @param locale the edited translation row's locale, or {@code null} for a default-language edit
      * @param creating whether the row was created rather than updated
-     * @param titleGiven whether a title argument was supplied (relevant only on create)
      * @param titleChanged whether the title actually changed
      * @param hiddenChanged whether the row's hidden flag actually changed
      * @param oldVersion the row's version before the save
@@ -850,7 +855,7 @@ public class MCPEditDocumentTool implements MCPTool
      * @version $Id$
      */
     private record SaveOutcome(DocumentReference ref, Locale locale, boolean creating,
-        boolean titleGiven, boolean titleChanged, boolean hiddenChanged, String oldVersion, String newVersion,
+        boolean titleChanged, boolean hiddenChanged, String oldVersion, String newVersion,
         int editCount, String newContent, List<AppliedEdit> appliedReplacements)
     {
     }
