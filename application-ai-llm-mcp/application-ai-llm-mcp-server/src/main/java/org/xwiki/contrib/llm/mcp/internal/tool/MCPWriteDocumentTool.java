@@ -83,6 +83,8 @@ public class MCPWriteDocumentTool implements MCPTool
 
     private static final String TITLE_PARAM = "title";
 
+    private static final String HIDDEN_PARAM = "hidden";
+
     private static final String LOCALE_PARAM = "locale";
 
     private static final String BASE_VERSION_PARAM = "base_version";
@@ -160,6 +162,8 @@ public class MCPWriteDocumentTool implements MCPTool
             .requiredString(REFERENCE_PARAM, referenceDescription)
             .requiredString(CONTENT_PARAM, "The complete new document source.")
             .string(TITLE_PARAM, "Optional new title. Kept unchanged when omitted.")
+            .bool(HIDDEN_PARAM, "Optional: set the page's hidden flag (hidden pages are technical pages "
+                + "excluded from normal browsing and search). Kept unchanged when omitted.")
             .string(LOCALE_PARAM, "Write a specific translation of the document, e.g. "
                 + MCPToolSupport.LOCALE_FORMS + " (exact-match, like get_document). Omit for the default "
                 + "language version, which must exist before a translation can be created.")
@@ -215,8 +219,10 @@ public class MCPWriteDocumentTool implements MCPTool
                 A translation write (locale="fr") targets that language row exactly, like
                 get_document: the default language version must exist first, a new translation needs
                 a multilingual wiki, and base_version is per language row - pass the Version read
-                with the SAME locale (omit it when creating the translation). Content and title are
-                per-row; objects, attachments and rights stay with the page.
+                with the SAME locale (omit it when creating the translation). Content, title and
+                hidden are per-row; objects, attachments and rights stay with the page.
+                hidden marks the page as a technical page (excluded from normal browsing and
+                search); with locale it applies to that translation row, like content and title.
 
             EXAMPLES
                 Create:      reference="Sandbox.New", title="Hello",
@@ -255,6 +261,7 @@ public class MCPWriteDocumentTool implements MCPTool
             }
             String content = MCPSourceText.normalizeLineEndings(rawContent);
             String title = PARAMS.parser().string(args, TITLE_PARAM);
+            Boolean hidden = PARAMS.parser().boolOrNull(args, HIDDEN_PARAM);
             Locale locale = MCPToolSupport.parseLocale(PARAMS.parser().string(args, LOCALE_PARAM), LOCALE_PARAM);
             String baseVersion = PARAMS.parser().string(args, BASE_VERSION_PARAM);
             String comment = PARAMS.parser().string(args, COMMENT_PARAM);
@@ -262,7 +269,8 @@ public class MCPWriteDocumentTool implements MCPTool
 
             DocumentReference ref = MCPWriteSupport.resolveForEdit(this.documentAccess, reference);
 
-            return writeAndSave(ref, new Request(reference, content, title, locale, baseVersion, comment, major));
+            return writeAndSave(ref,
+                new Request(reference, content, title, hidden, locale, baseVersion, comment, major));
         } catch (IllegalArgumentException e) {
             return MCPToolSupport.errorResult(e.getMessage());
         } catch (XWikiException e) {
@@ -315,8 +323,9 @@ public class MCPWriteDocumentTool implements MCPTool
         }
 
         boolean titleChanged = request.title() != null && !request.title().equals(xdoc.getTitle());
+        boolean hiddenChanged = MCPWriteSupport.hiddenChanged(request.hidden(), xdoc);
         if (!creating && request.content().equals(MCPSourceText.normalizeLineEndings(xdoc.getContent()))
-            && !titleChanged) {
+            && !titleChanged && !hiddenChanged) {
             return MCPToolSupport.result(NO_CHANGES_PREFIX
                 + MCPWriteSupport.currentRowSubject(target.locale()) + ". Nothing was saved.");
         }
@@ -324,7 +333,8 @@ public class MCPWriteDocumentTool implements MCPTool
         if (creating && target.locale() != null) {
             xdoc.setSyntax(defaultDoc.getSyntax());
         }
-        Document apiDoc = new Document(xdoc, xcontext);
+        XWikiDocument editable = MCPWriteSupport.editableWithHidden(xdoc, hiddenChanged, request.hidden());
+        Document apiDoc = new Document(editable, xcontext);
         apiDoc.setContent(request.content());
         if (titleChanged) {
             apiDoc.setTitle(request.title());
@@ -333,8 +343,8 @@ public class MCPWriteDocumentTool implements MCPTool
             MCPWriteSupport.isMinorEdit(creating, request.major()));
 
         return MCPToolSupport.result(buildSuccessResult(new Outcome(ref, target.locale(), creating,
-            request.title() != null, titleChanged, oldVersion, apiDoc.getVersion(), syntaxIdOf(xdoc)),
-            request.content()));
+            request.title() != null, titleChanged, hiddenChanged, oldVersion, apiDoc.getVersion(),
+            syntaxIdOf(xdoc)), request));
     }
 
     /**
@@ -425,14 +435,14 @@ public class MCPWriteDocumentTool implements MCPTool
     }
 
     /**
-     * Builds the success text of a save, from the outcome carrier plus the saved content (consulted
-     * only for the script-macro note, so the carrier stays a rendering-only value).
+     * Builds the success text of a save, from the outcome carrier plus the request (consulted only for
+     * the script-macro note on the saved content and for the applied hidden flag's echo wording).
      *
      * @param outcome the save outcome
-     * @param savedContent the final saved content
+     * @param request the parsed arguments
      * @return the success text
      */
-    private String buildSuccessResult(Outcome outcome, String savedContent)
+    private String buildSuccessResult(Outcome outcome, Request request)
     {
         String canonicalRef = this.serializer.serialize(outcome.ref());
         String target = outcome.locale() == null ? MCPWriteSupport.DOCUMENT_NOUN
@@ -453,12 +463,17 @@ public class MCPWriteDocumentTool implements MCPTool
                 sb.append(NEW_LINE).append("Title updated.");
             }
         }
+        String hiddenEcho =
+            MCPWriteSupport.hiddenLine(outcome.hiddenChanged(), Boolean.TRUE.equals(request.hidden()));
+        if (hiddenEcho != null) {
+            sb.append(NEW_LINE).append(hiddenEcho);
+        }
         String urlLine = MCPWriteSupport.buildReviewLine(this.documentAccessBridge, this.logger, outcome.ref(),
             outcome.creating(), outcome.oldVersion(), outcome.newVersion(), outcome.locale());
         if (urlLine != null) {
             sb.append(NEW_LINE).append(urlLine);
         }
-        String scriptNote = MCPWriteSupport.scriptMacroNote(savedContent);
+        String scriptNote = MCPWriteSupport.scriptMacroNote(request.content());
         if (scriptNote != null) {
             sb.append(NEW_LINE).append(scriptNote);
         }
@@ -485,14 +500,15 @@ public class MCPWriteDocumentTool implements MCPTool
      * @param reference the original reference string, echoed in error messages
      * @param content the complete new source, LF-normalized
      * @param title the requested title, or {@code null} when not requested
+     * @param hidden the requested hidden flag, or {@code null} to leave the row's flag untouched
      * @param locale the validated translation locale, or {@code null} for a default-language write
      * @param baseVersion the version the agent read, or {@code null} when none was given
      * @param comment the agent-supplied version comment, or {@code null}
      * @param major whether the caller asked for a major version
      * @version $Id$
      */
-    private record Request(String reference, String content, String title, Locale locale, String baseVersion,
-        String comment, boolean major)
+    private record Request(String reference, String content, String title, Boolean hidden, Locale locale,
+        String baseVersion, String comment, boolean major)
     {
     }
 
@@ -506,13 +522,14 @@ public class MCPWriteDocumentTool implements MCPTool
      * @param creating whether the row was created rather than overwritten
      * @param titleGiven whether a title argument was supplied (relevant only on create)
      * @param titleChanged whether the title actually changed
+     * @param hiddenChanged whether the row's hidden flag actually changed
      * @param oldVersion the row's version before the save
      * @param newVersion the row's version after the save
      * @param syntaxId the saved row's syntax identifier, shown on create
      * @version $Id$
      */
     private record Outcome(DocumentReference ref, Locale locale, boolean creating, boolean titleGiven,
-        boolean titleChanged, String oldVersion, String newVersion, String syntaxId)
+        boolean titleChanged, boolean hiddenChanged, String oldVersion, String newVersion, String syntaxId)
     {
     }
 }

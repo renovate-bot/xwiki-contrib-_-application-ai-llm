@@ -69,6 +69,8 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
 
     private static final String TITLE_KEY = "title";
 
+    private static final String HIDDEN_KEY = "hidden";
+
     private static final String LOCALE_KEY = "locale";
 
     private static final String COMMENT_KEY = "comment";
@@ -297,6 +299,24 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void retitleAndHideTogetherShareTheSummaryLine(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, "body stays", "Old Title");
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result =
+            call(Map.of(REFERENCE_KEY, REF, TITLE_KEY, "New Title", HIDDEN_KEY, true));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertEquals("New Title", saved.getTitle());
+        assertTrue(saved.isHidden());
+        // Title and hidden echoes join the count line, each with a leading space.
+        assertTrue(textOf(result).contains("0 edit(s) applied. Title updated. Marked hidden."), textOf(result));
+    }
+
+    @Test
     void retitleOnlyKeepsCrlfLineEndings(MockitoOldcore oldcore) throws Exception
     {
         storeDocument(oldcore, "line one\r\nline two", "Old Title");
@@ -310,6 +330,49 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
         assertEquals("New Title", saved.getTitle());
         // The edit pipeline works on an LF-normalized copy; a title-only save must not write that copy back.
         assertEquals("line one\r\nline two", saved.getContent());
+    }
+
+    @Test
+    void hiddenOnlyUnhideSavesAVersionedUnhide(MockitoOldcore oldcore) throws Exception
+    {
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.setContent("body stays");
+        doc.setHidden(true);
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+        String versionBefore = loadDocument(oldcore).getVersion();
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, HIDDEN_KEY, false));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertFalse(saved.isHidden());
+        assertEquals("body stays", saved.getContent());
+        // The regression pin for the platform's dirty-flag quirk: XWikiDocument.setHidden(false) clears
+        // the metadata-dirty flag, which would make this unhide-only save persist WITHOUT a version
+        // bump; the write path forces the flag back so the change is versioned.
+        assertNotEquals(versionBefore, saved.getVersion());
+        assertTrue(textOf(result).contains("Marked visible."), textOf(result));
+        // The generated version comment names the flag change.
+        verify(oldcore.getSpyXWiki()).saveDocument(any(XWikiDocument.class),
+            eq("[AI] 0 edits, marked visible"), eq(true), any());
+    }
+
+    @Test
+    void hiddenOnlyEditMarksAVisiblePageHidden(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, "body stays", "Title");
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, HIDDEN_KEY, true));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertTrue(saved.isHidden());
+        assertEquals("body stays", saved.getContent());
+        assertTrue(textOf(result).contains("Marked hidden."), textOf(result));
     }
 
     @Test
@@ -412,14 +475,14 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
-    void emptyEditsAndNoTitleReturnsError(MockitoOldcore oldcore) throws Exception
+    void emptyEditsNoTitleAndNoHiddenReturnsError(MockitoOldcore oldcore) throws Exception
     {
         storeDocument(oldcore, "content", "Title");
 
         McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF));
 
         assertEquals(Boolean.TRUE, result.isError());
-        assertTrue(textOf(result).contains("at least one edit or a title"), textOf(result));
+        assertEquals("Error: provide at least one edit, a title or a hidden flag.", textOf(result));
         verify(this.documentAccess, never()).resolveAndAuthorize(anyString(), any());
     }
 
@@ -653,7 +716,8 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
         // Declaration order is importance order; comment and major come after all pre-existing scalar
         // parameters (the hand-built edits array is merged last by the schema generator).
         assertEquals(
-            List.of(REFERENCE_KEY, TITLE_KEY, LOCALE_KEY, "base_version", COMMENT_KEY, MAJOR_KEY, EDITS_KEY),
+            List.of(REFERENCE_KEY, TITLE_KEY, HIDDEN_KEY, LOCALE_KEY, "base_version", COMMENT_KEY, MAJOR_KEY,
+                EDITS_KEY),
             List.copyOf(properties.keySet()));
     }
 

@@ -474,6 +474,83 @@ final class MCPWriteSupport
     }
 
     /**
+     * Decides whether an optional tri-state {@code hidden} argument changes the written row's hidden
+     * flag: {@code null} (the argument was omitted) never counts as a change, and a present value counts
+     * only when it differs from the row's current flag. On a row being created the current flag is
+     * {@code false} (a new {@link XWikiDocument} starts visible), so create-with-{@code hidden=true} is
+     * a change and create-with-{@code hidden=false} is not. {@link XWikiDocument#isHidden()} returns a
+     * boxed, never-{@code null} {@link Boolean}, compared with {@code equals}.
+     *
+     * @param requested the {@code hidden} argument, or {@code null} when absent
+     * @param current the row whose pre-save flag the argument is compared against
+     * @return whether the flag changes
+     */
+    static boolean hiddenChanged(Boolean requested, XWikiDocument current)
+    {
+        return requested != null && !requested.equals(current.isHidden());
+    }
+
+    /**
+     * Applies a changed hidden flag to the document about to be saved.
+     * {@link XWikiDocument#setHidden(Boolean)} forwards its argument to {@code setMetaDataDirty} when
+     * the value changes, so changing the flag to {@code false} CLEARS the metadata-dirty flag: an
+     * unhide-only save would then
+     * persist without a version bump, and could suppress the versioning of co-staged metadata changes.
+     * The dirty flag is forced back on so every hidden change is versioned. Callers apply this on their
+     * own clone of the loaded document - never on the store cache instance, and never through
+     * {@link com.xpn.xwiki.api.Document#setHidden(boolean)}, which mutates the wrapped instance directly
+     * without the wrapper's lazy clone - and before the api-document wrapping:
+     * {@link XWikiDocument#clone()} carries both the flag and the dirty markers into any later lazy
+     * re-clone.
+     *
+     * @param editable the tool's own clone of the document about to be saved
+     * @param hidden the new hidden flag
+     */
+    static void applyHidden(XWikiDocument editable, boolean hidden)
+    {
+        editable.setHidden(hidden);
+        editable.setMetaDataDirty(true);
+    }
+
+    /**
+     * Returns the document a content-writing tool stages its save on: the loaded instance untouched
+     * when the hidden flag is not changing (keeping the hidden-omitted path identical to before the
+     * flag existed), or the tool's own clone with the changed flag applied through
+     * {@link #applyHidden(XWikiDocument, boolean)}.
+     *
+     * @param xdoc the loaded document row
+     * @param changed whether the hidden flag changes (see {@link #hiddenChanged(Boolean, XWikiDocument)})
+     * @param hidden the requested hidden flag, non-{@code null} when {@code changed}
+     * @return the document to wrap and save
+     */
+    static XWikiDocument editableWithHidden(XWikiDocument xdoc, boolean changed, Boolean hidden)
+    {
+        if (!changed) {
+            return xdoc;
+        }
+        XWikiDocument editable = xdoc.clone();
+        applyHidden(editable, hidden);
+        return editable;
+    }
+
+    /**
+     * Builds the hidden-flag echo of a write tool's success result: the flag is echoed ONLY when it
+     * changed, so an omitted argument or a value identical to the current flag stays silent, on create
+     * and update alike.
+     *
+     * @param changed whether the hidden flag changed
+     * @param hidden the applied hidden flag, meaningful only when {@code changed}
+     * @return the echo line, or {@code null} when the result carries none
+     */
+    static String hiddenLine(boolean changed, boolean hidden)
+    {
+        if (!changed) {
+            return null;
+        }
+        return hidden ? "Marked hidden." : "Marked visible.";
+    }
+
+    /**
      * Builds the note line the content-writing tools append to a SUCCESS result when the saved body
      * contains a script macro ({@code {{velocity}}} or {@code {{groovy}}}, matched case-insensitively
      * on the brace-adjacent opening): the persisted source is not what users see, so the agent is

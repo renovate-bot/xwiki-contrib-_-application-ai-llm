@@ -506,6 +506,26 @@ public final class MCPToolSupport
     }
 
     /**
+     * Reads a declared boolean parameter as a tri-state value: the variant of {@link #bool(Map, String)}
+     * for omitted-means-unchanged parameters, returning {@code null} when the parameter is absent
+     * instead of coercing absence to {@code false} (see {@link #booleanValue} for the coercion rules of
+     * a present value).
+     *
+     * @param args the tool call arguments
+     * @param key the parameter name
+     * @return the value, or {@code null} when absent
+     * @throws IllegalArgumentException if the value is present but not a boolean
+     * @throws IllegalStateException if the parameter was not declared as a boolean
+     * @since 0.9.1
+     */
+    public Boolean boolOrNull(Map<String, Object> args, String key)
+    {
+        assertDeclared(key, ParamType.BOOLEAN);
+        Object value = args.get(key);
+        return value == null ? null : booleanValue(value, key);
+    }
+
+    /**
      * Reads a declared string-array parameter. Every element must be a string; anything else (a
      * non-array value or an array containing a non-string element) is rejected with the agent-facing
      * message. Each element is trimmed, and an element that is blank after trimming is dropped from

@@ -70,6 +70,8 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
 
     private static final String TITLE_KEY = "title";
 
+    private static final String HIDDEN_KEY = "hidden";
+
     private static final String BASE_VERSION_KEY = "base_version";
 
     private static final String LOCALE_KEY = "locale";
@@ -352,6 +354,86 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void overwriteWithTitleAndHiddenEchoesBothStatusLines(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, "Old Title");
+        String currentVersion = loadDocument(oldcore).getVersion();
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, OLD_BODY,
+            BASE_VERSION_KEY, currentVersion, TITLE_KEY, "New Title", HIDDEN_KEY, true));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertEquals("New Title", saved.getTitle());
+        assertTrue(saved.isHidden());
+        assertTrue(textOf(result).contains("Title updated.\nMarked hidden."), textOf(result));
+    }
+
+    @Test
+    void createWithHiddenTrueMarksThePageHidden(MockitoOldcore oldcore) throws Exception
+    {
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), any(), any(), eq(true)))
+            .thenReturn(VIEW_URL);
+
+        McpSchema.CallToolResult result =
+            call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, NEW_BODY, HIDDEN_KEY, true));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertTrue(saved.isHidden());
+        // One save, one version: the flag is applied in the creating save itself.
+        assertEquals("1.1", saved.getVersion());
+        assertTrue(textOf(result).contains("Marked hidden."), textOf(result));
+    }
+
+    @Test
+    void overwriteUnhideAloneSavesAVersionedUnhide(MockitoOldcore oldcore) throws Exception
+    {
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.setContent(OLD_BODY);
+        doc.setHidden(true);
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+        String currentVersion = loadDocument(oldcore).getVersion();
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, OLD_BODY,
+            BASE_VERSION_KEY, currentVersion, HIDDEN_KEY, false));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertFalse(saved.isHidden());
+        // XWikiDocument.setHidden(false) clears the metadata-dirty flag; the write path forces it back
+        // so this unhide-only overwrite (identical content) still lands as a new version.
+        assertNotEquals(currentVersion, saved.getVersion());
+        assertTrue(textOf(result).contains("Marked visible."), textOf(result));
+    }
+
+    @Test
+    void omittedHiddenLeavesAHiddenPageHidden(MockitoOldcore oldcore) throws Exception
+    {
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.setContent(OLD_BODY);
+        doc.setHidden(true);
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+        String currentVersion = loadDocument(oldcore).getVersion();
+        when(this.documentAccessBridge.getDocumentURL(any(), eq("view"), anyString(), any(), eq(true)))
+            .thenReturn(COMPARE_URL);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, NEW_BODY,
+            BASE_VERSION_KEY, currentVersion));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertEquals(NEW_BODY, saved.getContent());
+        // Tri-state: an omitted hidden argument must NOT mean false - the stored flag survives untouched.
+        assertTrue(saved.isHidden());
+        assertFalse(textOf(result).contains("Marked"), textOf(result));
+    }
+
+    @Test
     void agentCommentIsPrefixedAndSavedAsMinorEdit(MockitoOldcore oldcore) throws Exception
     {
         storeDocument(oldcore, OLD_BODY, TITLE);
@@ -475,7 +557,8 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
         McpSchema.Tool definition = this.tool.getToolDefinition();
         Map<?, ?> properties = (Map<?, ?>) definition.inputSchema().get("properties");
         assertEquals(
-            List.of(REFERENCE_KEY, CONTENT_KEY, TITLE_KEY, LOCALE_KEY, BASE_VERSION_KEY, COMMENT_KEY, MAJOR_KEY),
+            List.of(REFERENCE_KEY, CONTENT_KEY, TITLE_KEY, HIDDEN_KEY, LOCALE_KEY, BASE_VERSION_KEY, COMMENT_KEY,
+                MAJOR_KEY),
             List.copyOf(properties.keySet()));
     }
 

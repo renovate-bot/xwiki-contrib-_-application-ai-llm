@@ -87,6 +87,8 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
 
     private static final String TITLE_KEY = "title";
 
+    private static final String HIDDEN_KEY = "hidden";
+
     private static final String BASE_VERSION_KEY = "base_version";
 
     private static final String COMMENT_KEY = "comment";
@@ -313,6 +315,24 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void titleAndHiddenChangedTogetherEchoBothStatusLines(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocumentWithObject(oldcore, "First");
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, TITLE_KEY, "Renamed", HIDDEN_KEY, true, BASE_VERSION_KEY, currentVersion(oldcore),
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertEquals("Renamed", saved.getTitle());
+        assertTrue(saved.isHidden());
+        // Both status lines share the single status slot, joined in title-then-hidden order.
+        assertTrue(textOf(result).contains("Title updated.\nMarked hidden."), textOf(result));
+    }
+
+    @Test
     void titleIdenticalToTheCurrentOneIsNotEchoedAsAChange(MockitoOldcore oldcore) throws Exception
     {
         storeClassDocument(oldcore);
@@ -350,6 +370,77 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
         XWikiDocument saved = loadDocument(oldcore);
         assertEquals("Existing title", saved.getTitle());
         assertFalse(textOf(result).contains("Title"), textOf(result));
+    }
+
+    @Test
+    void createWithHiddenTrueMarksThePageHiddenInTheSameSave(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            HIDDEN_KEY, true, FIELDS_KEY, Map.of(TITLE_FIELD, "Draft")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertTrue(saved.isHidden());
+        // One save, one version: the flag is applied in the creating save itself.
+        assertEquals("1.1", saved.getVersion());
+        assertTrue(textOf(result).contains("Marked hidden."), textOf(result));
+    }
+
+    @Test
+    void updateFlippingHiddenMarksThePageAndBumpsTheVersion(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocumentWithObject(oldcore, "First");
+        String versionBefore = currentVersion(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, HIDDEN_KEY, true, BASE_VERSION_KEY, versionBefore,
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertTrue(saved.isHidden());
+        assertNotEquals(versionBefore, saved.getVersion());
+        assertTrue(textOf(result).contains("Marked hidden."), textOf(result));
+    }
+
+    @Test
+    void hiddenIdenticalToTheCurrentFlagIsNotEchoedAsAChange(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocumentWithObject(oldcore, "First");
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, HIDDEN_KEY, false, BASE_VERSION_KEY, currentVersion(oldcore),
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        assertFalse(saved.isHidden());
+        // hidden=false on an already-visible document changes nothing, so no "Marked" line.
+        assertFalse(textOf(result).contains("Marked"), textOf(result));
+    }
+
+    @Test
+    void omittedHiddenLeavesAHiddenDocumentHidden(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.setHidden(true);
+        doc.newXObject(CLASS_REFERENCE, oldcore.getXWikiContext());
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, BASE_VERSION_KEY, currentVersion(oldcore),
+            FIELDS_KEY, Map.of(TITLE_FIELD, "Updated")));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore);
+        // Tri-state: an omitted hidden argument must NOT mean false - the stored flag survives untouched.
+        assertTrue(saved.isHidden());
+        assertFalse(textOf(result).contains("Marked"), textOf(result));
     }
 
     @Test

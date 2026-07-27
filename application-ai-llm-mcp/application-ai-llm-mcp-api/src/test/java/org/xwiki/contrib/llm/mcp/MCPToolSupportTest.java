@@ -189,6 +189,7 @@ class MCPToolSupportTest
         assertThrows(IllegalStateException.class, () -> PARAMS.string(Map.of(), LIMIT));
         assertThrows(IllegalStateException.class, () -> PARAMS.integer(Map.of(), REF));
         assertThrows(IllegalStateException.class, () -> PARAMS.bool(Map.of(), REF));
+        assertThrows(IllegalStateException.class, () -> PARAMS.boolOrNull(Map.of(), REF));
         assertThrows(IllegalStateException.class, () -> PARAMS.stringList(Map.of(), REF));
     }
 
@@ -334,6 +335,27 @@ class MCPToolSupportTest
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
             () -> PARAMS.integer(Map.of(LIMIT, "lots"), LIMIT));
         assertTrue(thrown.getMessage().contains("must be an integer"), thrown.getMessage());
+    }
+
+    @Test
+    void boolOrNullReturnsNullForAbsentParameter()
+    {
+        assertNull(PARAMS.boolOrNull(Map.of(), HIDDEN));
+    }
+
+    @Test
+    void boolOrNullReadsPresentBooleanAndBooleanStringValues()
+    {
+        assertEquals(Boolean.TRUE, PARAMS.boolOrNull(Map.of(HIDDEN, true), HIDDEN));
+        assertEquals(Boolean.FALSE, PARAMS.boolOrNull(Map.of(HIDDEN, "false"), HIDDEN));
+    }
+
+    @Test
+    void boolOrNullRejectsNonBooleanValueWithAgentFacingError()
+    {
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+            () -> PARAMS.boolOrNull(Map.of(HIDDEN, "yes"), HIDDEN));
+        assertEquals("Error: 'hidden' parameter must be a boolean.", thrown.getMessage());
     }
 
     @Test

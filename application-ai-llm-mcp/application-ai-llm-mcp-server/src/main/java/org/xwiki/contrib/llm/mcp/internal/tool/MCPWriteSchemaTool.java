@@ -96,6 +96,8 @@ public class MCPWriteSchemaTool implements MCPTool
 
     private static final String BASE_VERSION_PARAM = "base_version";
 
+    private static final String HIDDEN_PARAM = "hidden";
+
     private static final String COMMENT_PARAM = "comment";
 
     private static final String MAJOR_PARAM = "major";
@@ -182,6 +184,8 @@ public class MCPWriteSchemaTool implements MCPTool
                 + "Required when the document already exists, and always required for remove_field; omit it "
                 + "only when add_field is creating a new document. The change is refused if the document "
                 + "changed since you read it.")
+            .bool(HIDDEN_PARAM, "Optional: set the hidden flag of the class document, applied in the same "
+                + "save (class pages are technical pages, usually hidden). Kept unchanged when omitted.")
             .string(COMMENT_PARAM, "Version comment shown in the document history. Stored prefixed with "
                 + "[AI]. Default: a generic [AI] comment.")
             .bool(MAJOR_PARAM, "Set true to record this change as a major version. Default false (minor). "
@@ -237,6 +241,8 @@ public class MCPWriteSchemaTool implements MCPTool
             NOTES
                 The reference document IS the class. There is no separate create operation: the first
                 add_field on a fieldless or new document creates the class.
+                Class pages are technical pages - pass hidden=true when creating a class so it stays
+                out of normal browsing (the App Within Minutes convention for Code-space pages).
                 operation is one of:
                     add_field     Add a new field. type is required.
                     modify_field  Change an existing field's pretty_name and/or attributes. type is
@@ -314,11 +320,12 @@ public class MCPWriteSchemaTool implements MCPTool
         String prettyName = PARAMS.parser().string(args, PRETTY_NAME_PARAM);
         Map<String, String> attributes = PARAMS.parser().stringMap(args, ATTRIBUTES_PARAM);
         String baseVersion = PARAMS.parser().string(args, BASE_VERSION_PARAM);
+        Boolean hidden = PARAMS.parser().boolOrNull(args, HIDDEN_PARAM);
         String comment = PARAMS.parser().string(args, COMMENT_PARAM);
         boolean major = PARAMS.parser().bool(args, MAJOR_PARAM);
         validateShape(operation, type, prettyName, attributes);
-        return new Request(reference, operation, field, type, prettyName, attributes, baseVersion, comment,
-            major);
+        return new Request(reference, operation, field, type, prettyName, attributes, baseVersion, hidden,
+            comment, major);
     }
 
     /**
@@ -362,15 +369,24 @@ public class MCPWriteSchemaTool implements MCPTool
             return versionProblem;
         }
         XWikiDocument editable = xdoc.clone();
-        return switch (request.operation()) {
+        boolean hiddenChanged = MCPWriteSupport.hiddenChanged(request.hidden(), editable);
+        if (hiddenChanged) {
+            MCPWriteSupport.applyHidden(editable, request.hidden());
+        }
+        String message = switch (request.operation()) {
             case ADD_FIELD -> saveAdd(editable, request, ref, localName, creating, oldVersion, xcontext);
             case MODIFY_FIELD -> saveModify(editable, request, ref, localName, creating, oldVersion, xcontext);
             case REMOVE_FIELD -> saveRemove(editable, request, ref, localName, creating, oldVersion, xcontext);
-            default -> MCPToolSupport.errorResult("Unsupported operation.");
+            default -> throw new IllegalArgumentException("Unsupported operation.");
         };
+        String hiddenEcho = MCPWriteSupport.hiddenLine(hiddenChanged, Boolean.TRUE.equals(request.hidden()));
+        if (hiddenEcho != null) {
+            message += NEW_LINE + hiddenEcho;
+        }
+        return MCPToolSupport.result(message);
     }
 
-    private McpSchema.CallToolResult saveAdd(XWikiDocument editable, Request request, DocumentReference ref,
+    private String saveAdd(XWikiDocument editable, Request request, DocumentReference ref,
         String localName, boolean creating, String oldVersion, XWikiContext xcontext) throws XWikiException
     {
         String rendered = MCPSchemaWriteSupport.addField(editable, request.field(), request.type(),
@@ -380,10 +396,10 @@ public class MCPWriteSchemaTool implements MCPTool
                 + strip(localName), xcontext);
         String headline = "Added " + FIELD_PREFIX + strip(request.field()) + QUOTE + " to" + CLASS_INFIX
             + strip(localName) + QUOTE + PERIOD;
-        return MCPToolSupport.result(fieldSuccess(headline, ref, rendered, creating, oldVersion, newVersion));
+        return fieldSuccess(headline, ref, rendered, creating, oldVersion, newVersion);
     }
 
-    private McpSchema.CallToolResult saveModify(XWikiDocument editable, Request request, DocumentReference ref,
+    private String saveModify(XWikiDocument editable, Request request, DocumentReference ref,
         String localName, boolean creating, String oldVersion, XWikiContext xcontext) throws XWikiException
     {
         String rendered = MCPSchemaWriteSupport.modifyField(editable, request.field(), request.prettyName(),
@@ -392,10 +408,10 @@ public class MCPWriteSchemaTool implements MCPTool
             "modified " + FIELD_PREFIX + strip(request.field()) + "\" on " + strip(localName), xcontext);
         String headline = "Updated " + FIELD_PREFIX + strip(request.field()) + QUOTE + " on" + CLASS_INFIX
             + strip(localName) + QUOTE + PERIOD;
-        return MCPToolSupport.result(fieldSuccess(headline, ref, rendered, creating, oldVersion, newVersion));
+        return fieldSuccess(headline, ref, rendered, creating, oldVersion, newVersion);
     }
 
-    private McpSchema.CallToolResult saveRemove(XWikiDocument editable, Request request, DocumentReference ref,
+    private String saveRemove(XWikiDocument editable, Request request, DocumentReference ref,
         String localName, boolean creating, String oldVersion, XWikiContext xcontext) throws XWikiException
     {
         MCPSchemaWriteSupport.removeField(editable, request.field(), localName);
@@ -409,7 +425,7 @@ public class MCPWriteSchemaTool implements MCPTool
         sb.append(NEW_LINE).append(disclosure);
         sb.append(NEW_LINE).append("The change is recorded in the document history and can be reverted "
             + "from there.");
-        return MCPToolSupport.result(sb.toString());
+        return sb.toString();
     }
 
     private String save(XWikiDocument editable, Request request, boolean creating, String summary,
@@ -544,12 +560,13 @@ public class MCPWriteSchemaTool implements MCPTool
      * @param prettyName the raw {@code pretty_name} argument, or {@code null}
      * @param attributes the parsed attributes, possibly empty
      * @param baseVersion the version the agent read, or {@code null} when none was given
+     * @param hidden the requested hidden flag of the class document, or {@code null} to leave it untouched
      * @param comment the agent-supplied version comment, or {@code null}
      * @param major whether to record a major version
      * @version $Id$
      */
     private record Request(String reference, String operation, String field, String type, String prettyName,
-        Map<String, String> attributes, String baseVersion, String comment, boolean major)
+        Map<String, String> attributes, String baseVersion, Boolean hidden, String comment, boolean major)
     {
     }
 }

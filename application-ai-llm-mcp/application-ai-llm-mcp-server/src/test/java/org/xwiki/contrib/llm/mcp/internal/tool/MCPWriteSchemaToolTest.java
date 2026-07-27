@@ -56,6 +56,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -92,6 +93,8 @@ class MCPWriteSchemaToolTest extends AbstractMCPWriteToolTest
     private static final String ATTRIBUTES_KEY = "attributes";
 
     private static final String BASE_VERSION_KEY = "base_version";
+
+    private static final String HIDDEN_KEY = "hidden";
 
     private static final String ADD_FIELD = "add_field";
 
@@ -210,6 +213,37 @@ class MCPWriteSchemaToolTest extends AbstractMCPWriteToolTest
         assertNotEquals(Boolean.TRUE, result.isError());
         // The wiki's default locale is stamped on the created class document, surviving the tool's clone.
         assertEquals(Locale.GERMAN, loadDocument(oldcore, DOC_REFERENCE).getDefaultLocale());
+    }
+
+    @Test
+    void addFieldWithHiddenTrueCreatesAHiddenClassDocument(MockitoOldcore oldcore) throws Exception
+    {
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, ADD_FIELD,
+            FIELD_KEY, TITLE_FIELD, TYPE_KEY, "String", HIDDEN_KEY, true));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore, DOC_REFERENCE);
+        assertTrue(saved.isHidden());
+        assertNotNull(saved.getXClass().get(TITLE_FIELD));
+        assertTrue(textOf(result).contains("Marked hidden."), textOf(result));
+    }
+
+    @Test
+    void omittedHiddenLeavesAHiddenClassDocumentHidden(MockitoOldcore oldcore) throws Exception
+    {
+        XWikiDocument doc = new XWikiDocument(DOC_REFERENCE);
+        doc.getXClass().addTextField(TITLE_FIELD, "Title", 30);
+        doc.setHidden(true);
+        oldcore.getSpyXWiki().saveDocument(doc, oldcore.getXWikiContext());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, MODIFY_FIELD,
+            FIELD_KEY, TITLE_FIELD, PRETTY_NAME_KEY, "Task title", BASE_VERSION_KEY, currentVersion(oldcore)));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        XWikiDocument saved = loadDocument(oldcore, DOC_REFERENCE);
+        // Tri-state: an omitted hidden argument must NOT mean false - the stored flag survives untouched.
+        assertTrue(saved.isHidden());
+        assertFalse(textOf(result).contains("Marked"), textOf(result));
     }
 
     @Test

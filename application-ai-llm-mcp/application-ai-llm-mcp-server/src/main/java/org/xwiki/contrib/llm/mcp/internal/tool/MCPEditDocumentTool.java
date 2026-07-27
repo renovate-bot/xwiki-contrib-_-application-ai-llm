@@ -114,6 +114,8 @@ public class MCPEditDocumentTool implements MCPTool
 
     private static final String TITLE_PARAM = "title";
 
+    private static final String HIDDEN_PARAM = "hidden";
+
     private static final String LOCALE_PARAM = "locale";
 
     private static final String BASE_VERSION_PARAM = "base_version";
@@ -219,6 +221,8 @@ public class MCPEditDocumentTool implements MCPTool
         return MCPToolSupport.builder()
             .requiredString(REFERENCE_PARAM, referenceDescription)
             .string(TITLE_PARAM, "Optional new title. May be set alone (retitle) or together with edits.")
+            .bool(HIDDEN_PARAM, "Optional: set the page's hidden flag (hidden pages are technical pages "
+                + "excluded from normal browsing and search). Kept unchanged when omitted.")
             .string(LOCALE_PARAM, "Edit a specific translation of the document, e.g. "
                 + MCPToolSupport.LOCALE_FORMS + " (exact-match, like get_document). Omit for the default "
                 + "language version, which must exist before a translation can be created.")
@@ -312,6 +316,9 @@ public class MCPEditDocumentTool implements MCPTool
                 Comment:     reference="Sandbox.WebHome", comment="fix typo in installation steps",
                              edits=[{"old_string":"teh","new_string":"the"}]
                 Retitle:     reference="Sandbox.WebHome", title="New Title"
+                Hide page:   reference="Sandbox.WebHome", hidden=true
+                             (hidden may be set alone or with edits; omitted, the flag is kept
+                             unchanged)
                 Edit a translation: reference="Sandbox.WebHome", locale="fr",
                              edits=[{"old_string":"ancien","new_string":"nouveau"}]
                              (targets the fr row exactly; read it with get_document locale="fr"
@@ -332,13 +339,14 @@ public class MCPEditDocumentTool implements MCPTool
         try {
             String reference = PARAMS.parser().requireString(args, REFERENCE_PARAM);
             String title = PARAMS.parser().string(args, TITLE_PARAM);
+            Boolean hidden = PARAMS.parser().boolOrNull(args, HIDDEN_PARAM);
             Locale locale = MCPToolSupport.parseLocale(PARAMS.parser().string(args, LOCALE_PARAM), LOCALE_PARAM);
             String baseVersion = PARAMS.parser().string(args, BASE_VERSION_PARAM);
             String comment = PARAMS.parser().string(args, COMMENT_PARAM);
             boolean major = PARAMS.parser().bool(args, MAJOR_PARAM);
             List<EditOp> edits = parseEdits(args);
-            if (edits.isEmpty() && title == null) {
-                throw new IllegalArgumentException("Error: provide at least one edit or a title.");
+            if (edits.isEmpty() && title == null && hidden == null) {
+                throw new IllegalArgumentException("Error: provide at least one edit, a title or a hidden flag.");
             }
             if (edits.size() > MAX_EDITS) {
                 throw new IllegalArgumentException("Error: too many edits (max " + MAX_EDITS + ").");
@@ -346,7 +354,8 @@ public class MCPEditDocumentTool implements MCPTool
 
             DocumentReference ref = MCPWriteSupport.resolveForEdit(this.documentAccess, reference);
 
-            return applyAndSave(ref, new Request(reference, title, locale, baseVersion, comment, major, edits));
+            return applyAndSave(ref,
+                new Request(reference, title, hidden, locale, baseVersion, comment, major, edits));
         } catch (IllegalArgumentException e) {
             return MCPToolSupport.errorResult(e.getMessage());
         } catch (XWikiException e) {
@@ -409,8 +418,9 @@ public class MCPEditDocumentTool implements MCPTool
         }
 
         boolean titleChanged = request.title() != null && !request.title().equals(xdoc.getTitle());
+        boolean hiddenChanged = MCPWriteSupport.hiddenChanged(request.hidden(), xdoc);
 
-        if (!creating && newContent.equals(original) && !titleChanged) {
+        if (!creating && newContent.equals(original) && !titleChanged && !hiddenChanged) {
             return MCPToolSupport.result("No changes: the edits produced content identical to "
                 + MCPWriteSupport.currentRowSubject(target.locale()) + ". Nothing was saved.");
         }
@@ -418,25 +428,31 @@ public class MCPEditDocumentTool implements MCPTool
         if (creating && target.locale() != null) {
             xdoc.setSyntax(defaultDoc.getSyntax());
         }
-        Document apiDoc = prepareSave(xdoc, xcontext, newContent, original, titleChanged, request.title());
+        Document apiDoc = prepareSave(MCPWriteSupport.editableWithHidden(xdoc, hiddenChanged, request.hidden()),
+            xcontext, newContent, original, titleChanged, request.title());
         apiDoc.save(
             MCPWriteSupport.buildComment(request.comment(), creating,
-                editSummary(request.edits().size(), titleChanged)),
+                editSummary(request.edits().size(), titleChanged, hiddenChanged,
+                    Boolean.TRUE.equals(request.hidden()))),
             MCPWriteSupport.isMinorEdit(creating, request.major()));
 
         SaveOutcome outcome = new SaveOutcome(ref, target.locale(), creating, request.title() != null,
-            titleChanged, oldVersion, apiDoc.getVersion(), request.edits().size(), newContent,
+            titleChanged, hiddenChanged, oldVersion, apiDoc.getVersion(), request.edits().size(), newContent,
             appliedReplacements);
-        return MCPToolSupport.result(buildSuccessResult(outcome));
+        return MCPToolSupport.result(buildSuccessResult(outcome, request.hidden()));
     }
 
     /**
      * Stages the content and title changes on the API document wrapper, applying only what actually changed.
      * A title-only save must leave the body bytes untouched: the new content is the LF-normalized copy of the
      * source, so writing it back unchanged would silently rewrite a CRLF document's line endings into a
-     * whole-body diff.
+     * whole-body diff. A hidden-only save likewise stages neither content nor title - the changed flag
+     * arrives already applied on the caller's clone (see
+     * {@link MCPWriteSupport#editableWithHidden(XWikiDocument, boolean, Boolean)}), whose forced
+     * metadata-dirty flag alone makes the save version correctly.
      *
-     * @param xdoc the loaded document
+     * @param xdoc the document to stage on: the loaded row, or the caller's clone carrying a changed
+     *     hidden flag
      * @param xcontext the XWiki context
      * @param newContent the edited, LF-normalized content
      * @param original the LF-normalized content the document had before the edits
@@ -607,43 +623,45 @@ public class MCPEditDocumentTool implements MCPTool
 
     /**
      * Builds this tool's generated update description for the version comment (used when the agent
-     * supplied no comment on a non-creating save): the number of edits applied and whether the document
-     * was retitled.
+     * supplied no comment on a non-creating save): the number of edits applied, whether the document
+     * was retitled, and whether its hidden flag changed.
      *
      * @param editCount the number of edits applied
      * @param titleChanged whether the title changed
+     * @param hiddenChanged whether the hidden flag changed
+     * @param hidden the applied hidden flag, meaningful only when {@code hiddenChanged}
      * @return the update description
      */
-    private static String editSummary(int editCount, boolean titleChanged)
+    private static String editSummary(int editCount, boolean titleChanged, boolean hiddenChanged,
+        boolean hidden)
     {
-        return editCount + (editCount == 1 ? " edit" : " edits") + (titleChanged ? ", retitled" : "");
+        String summary = editCount + (editCount == 1 ? " edit" : " edits") + (titleChanged ? ", retitled" : "");
+        if (hiddenChanged) {
+            summary += hidden ? ", marked hidden" : ", marked visible";
+        }
+        return summary;
     }
 
-    private String buildSuccessResult(SaveOutcome outcome)
+    /**
+     * Builds the success text of a save, from the outcome carrier plus the requested hidden flag (needed
+     * only for the echo wording of a changed flag).
+     *
+     * @param outcome the save outcome
+     * @param hidden the requested hidden flag, or {@code null} when the argument was omitted
+     * @return the success text
+     */
+    private String buildSuccessResult(SaveOutcome outcome, Boolean hidden)
     {
         String canonicalRef = this.serializer.serialize(outcome.ref());
         String target = outcome.locale() == null ? MCPWriteSupport.DOCUMENT_NOUN
             : MCPWriteSupport.translationSubject(outcome.locale()) + " of ";
+        String hiddenEcho =
+            MCPWriteSupport.hiddenLine(outcome.hiddenChanged(), Boolean.TRUE.equals(hidden));
         StringBuilder sb = new StringBuilder();
         if (outcome.creating()) {
-            sb.append("Created ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
-            sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion());
-            if (outcome.titleGiven()) {
-                sb.append(NEW_LINE).append("Title set.");
-            }
+            appendCreateSummary(sb, outcome, target, canonicalRef, hiddenEcho);
         } else {
-            sb.append("Updated ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
-            sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.oldVersion()).append(" -> ")
-                .append(outcome.newVersion()).append(NEW_LINE);
-            sb.append(outcome.editCount()).append(" edit(s) applied");
-            int totalReplacements = outcome.appliedReplacements().stream().mapToInt(AppliedEdit::count).sum();
-            if (totalReplacements > outcome.editCount()) {
-                sb.append(OPEN_PARENTHETICAL).append(totalReplacements).append(" replacements)");
-            }
-            sb.append(PERIOD);
-            if (outcome.titleChanged()) {
-                sb.append(" Title updated.");
-            }
+            appendUpdateSummary(sb, outcome, target, canonicalRef, hiddenEcho);
         }
 
         String urlLine = MCPWriteSupport.buildReviewLine(this.documentAccessBridge, this.logger, outcome.ref(),
@@ -662,6 +680,59 @@ public class MCPEditDocumentTool implements MCPTool
             sb.append(NEW_LINE).append(NEW_LINE).append(echo);
         }
         return sb.toString();
+    }
+
+    /**
+     * Appends the headline and status lines of a creating save: the created target, its first version,
+     * and the title/hidden echoes, each on its own line.
+     *
+     * @param sb the result being built
+     * @param outcome the save outcome
+     * @param target the noun phrase naming the written row
+     * @param canonicalRef the canonical display reference
+     * @param hiddenEcho the hidden-flag echo line, or {@code null} when the flag did not change
+     */
+    private static void appendCreateSummary(StringBuilder sb, SaveOutcome outcome, String target,
+        String canonicalRef, String hiddenEcho)
+    {
+        sb.append("Created ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
+        sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion());
+        if (outcome.titleGiven()) {
+            sb.append(NEW_LINE).append("Title set.");
+        }
+        if (hiddenEcho != null) {
+            sb.append(NEW_LINE).append(hiddenEcho);
+        }
+    }
+
+    /**
+     * Appends the headline and status lines of an updating save: the updated target, the version
+     * transition, the applied-edit counts, and the title/hidden echoes on the same line.
+     *
+     * @param sb the result being built
+     * @param outcome the save outcome
+     * @param target the noun phrase naming the written row
+     * @param canonicalRef the canonical display reference
+     * @param hiddenEcho the hidden-flag echo line, or {@code null} when the flag did not change
+     */
+    private static void appendUpdateSummary(StringBuilder sb, SaveOutcome outcome, String target,
+        String canonicalRef, String hiddenEcho)
+    {
+        sb.append("Updated ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
+        sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.oldVersion()).append(" -> ")
+            .append(outcome.newVersion()).append(NEW_LINE);
+        sb.append(outcome.editCount()).append(" edit(s) applied");
+        int totalReplacements = outcome.appliedReplacements().stream().mapToInt(AppliedEdit::count).sum();
+        if (totalReplacements > outcome.editCount()) {
+            sb.append(OPEN_PARENTHETICAL).append(totalReplacements).append(" replacements)");
+        }
+        sb.append(PERIOD);
+        if (outcome.titleChanged()) {
+            sb.append(" Title updated.");
+        }
+        if (hiddenEcho != null) {
+            sb.append(' ').append(hiddenEcho);
+        }
     }
 
     /**
@@ -770,6 +841,7 @@ public class MCPEditDocumentTool implements MCPTool
      * @param creating whether the row was created rather than updated
      * @param titleGiven whether a title argument was supplied (relevant only on create)
      * @param titleChanged whether the title actually changed
+     * @param hiddenChanged whether the row's hidden flag actually changed
      * @param oldVersion the row's version before the save
      * @param newVersion the row's version after the save
      * @param editCount the number of edits applied
@@ -778,8 +850,8 @@ public class MCPEditDocumentTool implements MCPTool
      * @version $Id$
      */
     private record SaveOutcome(DocumentReference ref, Locale locale, boolean creating,
-        boolean titleGiven, boolean titleChanged, String oldVersion, String newVersion, int editCount,
-        String newContent, List<AppliedEdit> appliedReplacements)
+        boolean titleGiven, boolean titleChanged, boolean hiddenChanged, String oldVersion, String newVersion,
+        int editCount, String newContent, List<AppliedEdit> appliedReplacements)
     {
     }
 
@@ -789,6 +861,7 @@ public class MCPEditDocumentTool implements MCPTool
      *
      * @param reference the original reference string, echoed in error messages
      * @param title the requested title, or {@code null} when not requested
+     * @param hidden the requested hidden flag, or {@code null} to leave the row's flag untouched
      * @param locale the validated translation locale, or {@code null} for a default-language edit
      * @param baseVersion the version the agent read, or {@code null} when the lock was not requested
      * @param comment the agent-supplied version comment, or {@code null}
@@ -796,8 +869,8 @@ public class MCPEditDocumentTool implements MCPTool
      * @param edits the parsed edit operations, in order
      * @version $Id$
      */
-    private record Request(String reference, String title, Locale locale, String baseVersion, String comment,
-        boolean major, List<EditOp> edits)
+    private record Request(String reference, String title, Boolean hidden, Locale locale, String baseVersion,
+        String comment, boolean major, List<EditOp> edits)
     {
     }
 }
