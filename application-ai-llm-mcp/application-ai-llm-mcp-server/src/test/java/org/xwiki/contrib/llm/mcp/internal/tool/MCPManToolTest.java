@@ -413,12 +413,36 @@ class MCPManToolTest extends AbstractMCPToolTest
     }
 
     @Test
+    void referencePageRendersAwmGuide()
+    {
+        String output = callMan(this.manTool, "awm");
+
+        assertTrue(output.startsWith("NAME"), output);
+        assertTrue(output.contains("awm - "), output);
+        // Body markers from the grounded AWM application-structure reference.
+        assertTrue(output.contains("App Within Minutes"), output);
+        assertTrue(output.contains("THE SHAPE"), output);
+        assertTrue(output.contains("XWiki.ClassSheetBinding"), output);
+        assertTrue(output.contains("CORE RECIPE"), output);
+    }
+
+    @Test
     void catalogListsXWikiSyntaxUnderReference()
     {
         String output = callMan(this.manTool, null);
 
         assertTrue(output.contains("Reference"), output);
         assertTrue(output.contains("  xwiki-syntax - "), output);
+    }
+
+    @Test
+    void catalogListsAwmUnderReference()
+    {
+        String output = callMan(this.manTool, null);
+
+        assertTrue(output.contains("Reference"), output);
+        assertTrue(output.contains("  awm - XWiki applications (App Within Minutes): the standard structure "
+            + "and how to build one with the write tools."), output);
     }
 
     @Test
@@ -430,7 +454,7 @@ class MCPManToolTest extends AbstractMCPToolTest
         McpSchema.CallToolResult result = call(Map.of(TOOL_PARAM, "nope"));
 
         assertTrue(result.isError());
-        assertTrue(textOf(result).contains("Reference pages: xwiki-syntax."), textOf(result));
+        assertTrue(textOf(result).contains("Reference pages: awm, xwiki-syntax."), textOf(result));
     }
 
     @Test

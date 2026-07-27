@@ -21,6 +21,7 @@ package org.xwiki.contrib.llm.mcp.internal.tool;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -203,8 +204,135 @@ public class MCPManTool implements MCPTool
             Script macros ({{velocity}}, {{groovy}}) run only with the right script/programming rights.
         """;
 
-    private static final Map<String, ReferencePage> REFERENCE_PAGES = Map.of(
-        XWIKI_SYNTAX_ID, new ReferencePage(XWIKI_SYNTAX_ID, XWIKI_SYNTAX_SUMMARY, XWIKI_SYNTAX_CONTENT));
+    private static final String AWM_ID = "awm";
+
+    private static final String AWM_SUMMARY = "XWiki applications (App Within Minutes): the standard structure "
+        + "and how to build one with the write tools.";
+
+    private static final String AWM_CONTENT = """
+        WHAT AN APP IS
+            An XWiki application is not a program - it is a set of ordinary wiki pages following a
+            naming convention. App Within Minutes (AWM) is the wiki's built-in wizard for creating
+            such apps; an app assembled by hand with the write tools has the same shape and works the
+            same way. There is no app registry: the structure IS the app. Classes are wiki-local, so
+            the whole structure lives in one wiki.
+
+        THE SHAPE
+            An app named Movies lives in the Movies space. Pages under Movies.Code are technical -
+            always create them with hidden=true:
+
+            Movies.WebHome                      visible  home page - live table listing the entries
+            Movies.<entry pages>                visible  one page per entry, each holding one object
+                                                         of the app class
+            Movies.Code.MoviesClass             hidden   the class (field definitions) + sheet binding
+            Movies.Code.MoviesSheet             hidden   renders an entry's fields in view and edit
+            Movies.Code.MoviesTemplate          hidden   holds one default-valued object; copied into
+                                                         each new entry
+            Movies.Code.MoviesTemplateProvider  hidden   registers the entry type in the Create dialog
+            Movies.Code.MoviesTranslations      hidden   optional UI label translations
+
+        HOW AN ENTRY GETS RENDERED
+            The entry page holds the object; the class document holds an XWiki.ClassSheetBinding
+            object pointing at the sheet; the wiki then renders the sheet instead of the entry's own
+            content, in view and edit alike. Without the binding an entry is a blank page that
+            happens to carry an object.
+
+        CORE RECIPE
+            1. Class - the first add_field creates the class document:
+                 write_schema reference=Movies.Code.MoviesClass operation=add_field field=genre
+                     type=StaticList attributes={"values": "drama|comedy"} hidden=true
+            2. Sheet - write_document reference=Movies.Code.MoviesSheet hidden=true and NO title
+               (a sheet with a title replaces every entry's displayed title), with one
+               dt/dd pair per field:
+                 {{velocity}}
+                 #set ($object = $doc.getObject('Movies.Code.MoviesClass'))
+                 #if (!$object)
+                   Entry pages of the Movies app hold a Movies.Code.MoviesClass object.
+                   #stop
+                 #end
+                 #set ($discard = $doc.use($object))
+                 {{html wiki="true"}}
+                 <div class="xform"><dl>
+                   <dt><label>$escapetool.xml($doc.displayPrettyName('genre', false, false))</label></dt>
+                   <dd>$doc.display('genre')</dd>
+                 </dl></div>
+                 {{/html}}
+                 {{/velocity}}
+            3. Binding - an object ON THE CLASS DOCUMENT (read it first for base_version):
+                 write_object reference=Movies.Code.MoviesClass class=XWiki.ClassSheetBinding
+                     fields={"sheet": "Movies.Code.MoviesSheet"} base_version=...
+            4. Entries:
+                 write_object reference=Movies.GoodfellasReview class=Movies.Code.MoviesClass
+                     title="Goodfellas" fields={"genre": "drama"}
+            That is a working app: entries render and edit through the sheet.
+
+        CREATING ENTRIES FROM THE WIKI UI
+            5. Template - a page holding one object of the class with default values:
+                 write_object reference=Movies.Code.MoviesTemplate class=Movies.Code.MoviesClass
+                     fields={"genre": "drama"} hidden=true
+            6. Provider - registers the entry type in the Create dialog:
+                 write_object reference=Movies.Code.MoviesTemplateProvider
+                     class=XWiki.TemplateProviderClass hidden=true
+                     fields={"name": "Movie", "template": "Movies.Code.MoviesTemplate",
+                             "creationRestrictions": "Movies", "creationRestrictionsAreSuggestions": "1"}
+            Without a provider, entries can still be created from a URL:
+            <wiki>/bin/create/Movies/NewEntry?template=Movies.Code.MoviesTemplate
+
+        HOME PAGE
+            write_document reference=Movies.WebHome with a live table over the class:
+              {{velocity}}
+              #set ($columns = ['doc.title', 'genre', '_actions'])
+              #set ($columnsProperties = {'doc.title': {'link': 'view'}})
+              #set ($options = {'className': 'Movies.Code.MoviesClass',
+                'translationPrefix': 'movies.livetable.'})
+              #livetable('movies' $columns $columnsProperties $options)
+              {{/velocity}}
+            Column labels resolve through translation keys (movies.livetable.doc.title, ...);
+            without a translations document they fall back to raw keys - cosmetic, not fatal.
+
+        FULL AWM CITIZENSHIP
+            Two objects on the home page make the app a first-class AWM application - AWM's own
+            wizard recognizes and can edit it, and it appears in the Applications panel:
+            - the app descriptor (columns are space-separated):
+                write_object reference=Movies.WebHome class=AppWithinMinutes.LiveTableClass
+                    fields={"class": "Movies.Code.MoviesClass",
+                            "columns": "doc.title genre _actions",
+                            "dataSpace": "Movies", "description": "..."}
+            - the Applications panel entry (parameters is one key=value per line):
+                write_object reference=Movies.WebHome class=XWiki.UIExtensionClass
+                    fields={"name": "platform.panels.MoviesApplication",
+                            "extensionPointId": "org.xwiki.platform.panels.Applications",
+                            "parameters": "label=Movies\\ntarget=Movies.WebHome\\nicon=icon:film",
+                            "scope": "wiki"}
+            And three objects on the CLASS document wire up the wizard's Edit application
+            button (without them, editing the class opens the raw editor):
+                write_object ... class=XWiki.DocumentSheetBinding
+                    fields={"sheet": "AppWithinMinutes.ClassEditSheet"}
+                write_object ... class=XWiki.DocumentSheetBinding
+                    fields={"sheet": "XWiki.ClassSheet"}
+                write_object ... class=AppWithinMinutes.MetadataClass
+                    fields={"dataSpaceName": "Movies"}
+
+        RIGHTS AND LIMITS
+            Sheets and the home page run Velocity, executed with the rights of their last AUTHOR -
+            the user this MCP session acts as. Without script right the pages save fine but render
+            nothing useful. Space rights (WebPreferences) and rights objects are refused by the
+            write tools: ask a wiki administrator. A translations document registered wiki-wide and
+            an Applications-panel entry both need wiki-admin rights to take effect - leave them to
+            an admin or skip them.
+
+        READING AN EXISTING APP
+            get_schema with no arguments catalogs the classes; get_schema class=... shows the
+            fields; query_objects class=... lists the entries; the Code-space pages are ordinary
+            documents - read them with get_document (they are hidden, so query_documents needs
+            includeHidden=true).
+        """;
+
+    // Key-sorted map: renderUnknown joins the key set into an agent-facing string, so iteration order must be
+    // deterministic (Map.of randomizes it per JVM run).
+    private static final Map<String, ReferencePage> REFERENCE_PAGES = Collections.unmodifiableMap(new TreeMap<>(Map.of(
+        XWIKI_SYNTAX_ID, new ReferencePage(XWIKI_SYNTAX_ID, XWIKI_SYNTAX_SUMMARY, XWIKI_SYNTAX_CONTENT),
+        AWM_ID, new ReferencePage(AWM_ID, AWM_SUMMARY, AWM_CONTENT))));
 
     /**
      * The declared parameters: one source for both the advertised input schema and the typed

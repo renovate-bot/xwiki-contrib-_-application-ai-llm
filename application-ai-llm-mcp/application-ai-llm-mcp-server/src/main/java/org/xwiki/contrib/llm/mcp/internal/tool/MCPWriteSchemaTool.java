@@ -243,6 +243,7 @@ public class MCPWriteSchemaTool implements MCPTool
                 add_field on a fieldless or new document creates the class.
                 Class pages are technical pages - pass hidden=true when creating a class so it stays
                 out of normal browsing (the App Within Minutes convention for Code-space pages).
+                See man awm for the full application structure.
                 operation is one of:
                     add_field     Add a new field. type is required.
                     modify_field  Change an existing field's pretty_name and/or attributes. type is
