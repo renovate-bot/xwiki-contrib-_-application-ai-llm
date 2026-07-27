@@ -52,6 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -131,7 +132,9 @@ class SolrConnectorTest
         assertEquals(CONTENT, context.content());
         assertEquals(0.42, context.similarityScore(), 0.0001);
         assertNull(context.vector());
-        verify(this.client).close();
+        // The platform caches one client per core and owns its lifecycle - the connector must never close it
+        // (closing a remote HttpSolrClient destroys the shared connection pool for every later call).
+        verify(this.client, never()).close();
     }
 
     @Test

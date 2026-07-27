@@ -104,7 +104,8 @@ public class SolrConnector
      */
     public void storeChunk(Chunk chunk, String id) throws SolrServerException
     {
-        try (SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+        try {
+            SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
             SolrInputDocument solrDocument = getSolrDocument(chunk);
             client.add(solrDocument);
             client.commit();
@@ -121,15 +122,13 @@ public class SolrConnector
      */
     public void storeChunks(List<Chunk> chunks) throws SolrServerException, IOException, SolrException
     {
-        try (SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
-            List<SolrInputDocument> solrDocuments = chunks.stream().map(this::getSolrDocument).toList();
-            // Don't commit changes explicitly to avoid the performance impact of committing, just ask Solr to commit
-            // within 10 seconds.
-            client.add(solrDocuments, 10000);
-            // Trigger a soft commit to ensure that the chunks are available for search.
-            client.commit(null, false, true, true);
-
-        }
+        SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
+        List<SolrInputDocument> solrDocuments = chunks.stream().map(this::getSolrDocument).toList();
+        // Don't commit changes explicitly to avoid the performance impact of committing, just ask Solr to commit
+        // within 10 seconds.
+        client.add(solrDocuments, 10000);
+        // Trigger a soft commit to ensure that the chunks are available for search.
+        client.commit(null, false, true, true);
     }
 
     private SolrInputDocument getSolrDocument(Chunk chunk)
@@ -168,7 +167,8 @@ public class SolrConnector
      */
     public void deleteChunk(String id)
     {
-        try (SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+        try {
+            SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
             client.deleteById(id);
             client.commit();
         } catch (Exception e) {
@@ -290,7 +290,9 @@ public class SolrConnector
         query.addFilterQuery(queryString);
         query.setRows(endChunk - startChunk);
 
-        try (SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+        try {
+            SolrClient client =
+                this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
             QueryResponse response = client.query(query);
             SolrDocumentList documents = response.getResults();
             return documents.stream()
@@ -377,13 +379,12 @@ public class SolrConnector
 
     private void deleteChunksByQuery(String query) throws IOException, SolrServerException, SolrException
     {
-        try (SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
-            // Ask for an actual commit within 10 seconds to avoid the cost of a hard commit.
-            client.deleteByQuery(query, 10000);
-            // Trigger an explicit soft commit to ensure that the chunks are really gone when we search for them
-            // while checking if we should re-embed a chunk.
-            client.commit(null, false, true, true);
-        }
+        SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
+        // Ask for an actual commit within 10 seconds to avoid the cost of a hard commit.
+        client.deleteByQuery(query, 10000);
+        // Trigger an explicit soft commit to ensure that the chunks are really gone when we search for them
+        // while checking if we should re-embed a chunk.
+        client.commit(null, false, true, true);
     }
 
     /**
@@ -409,7 +410,9 @@ public class SolrConnector
                 .map(this.solrUtils::toCompleteFilterQueryString)
                 .collect(Collectors.joining(OR_DELIMITER, PARENTHESIS_OPEN, PARENTHESIS_CLOSE)));
 
-        try (SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+        try {
+            SolrClient client =
+                this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
             QueryResponse response = client.query(query);
             SolrDocumentList documents = response.getResults();
             return documents.stream()
@@ -481,7 +484,8 @@ public class SolrConnector
     public List<Context> search(String solrQuery, int limit, boolean includeVector) throws SolrServerException
     {
         List<Context> resultsList = List.of();
-        try (SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+        try {
+            SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
             SolrQuery query = new SolrQuery();
             query.setQuery(solrQuery);
             query.setFields(FIELD_ID,
@@ -545,7 +549,8 @@ public class SolrConnector
             return resultsList;
         }
         
-        try (SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+        try {
+            SolrClient client = solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
             // split embeddingModelMap into sets of collections with the same embedding model
             Map<String, List<String>> embeddingModelCollectionsMap = collectionEmbeddingModelMap.entrySet().stream()
                 // Group by value (embedding model) and collect keys (collections) into a list
@@ -612,7 +617,9 @@ public class SolrConnector
         List<Context> resultsList = new ArrayList<>();
 
         if (limit > 0) {
-            try (SolrClient client = this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient()) {
+            try {
+                SolrClient client =
+                    this.solr.getCore(AiLLMSolrCoreInitializer.DEFAULT_AILLM_SOLR_CORE).getClient();
                 SolrQuery query = new SolrQuery();
                 query.setQuery("%s:%s".formatted(AiLLMSolrCoreInitializer.FIELD_CONTENT_INDEX,
                     this.solrUtils.toCompleteFilterQueryString(textQuery)));
