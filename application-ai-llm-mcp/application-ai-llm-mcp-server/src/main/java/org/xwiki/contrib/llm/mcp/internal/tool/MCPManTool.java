@@ -229,7 +229,8 @@ public class MCPManTool implements MCPTool
             Movies.Code.MoviesTemplate          hidden   holds one default-valued object; copied into
                                                          each new entry
             Movies.Code.MoviesTemplateProvider  hidden   registers the entry type in the Create dialog
-            Movies.Code.MoviesTranslations      hidden   optional UI label translations
+            Movies.Code.MoviesTranslations      hidden   UI labels - without it the live table
+                                                         shows raw keys (see TRANSLATIONS)
 
         HOW AN ENTRY GETS RENDERED
             The entry page holds the object; the class document holds an XWiki.ClassSheetBinding
@@ -238,6 +239,9 @@ public class MCPManTool implements MCPTool
             happens to carry an object.
 
         CORE RECIPE
+            Chained writes: every write bumps the document's version and echoes the new one -
+            pass that echoed version as base_version on your NEXT change to the same document
+            (each add_field, then the binding, then any objects added to an existing page).
             1. Class - the first add_field creates the class document:
                  write_schema reference=Movies.Code.MoviesClass operation=add_field field=genre
                      type=StaticList attributes={"values": "drama|comedy"} hidden=true
@@ -282,13 +286,43 @@ public class MCPManTool implements MCPTool
             write_document reference=Movies.WebHome with a live table over the class:
               {{velocity}}
               #set ($columns = ['doc.title', 'genre', '_actions'])
-              #set ($columnsProperties = {'doc.title': {'link': 'view'}})
+              #set ($columnsProperties = {
+                'doc.title': {'link': 'view'},
+                'genre': {},
+                '_actions': {'sortable': false, 'filterable': false, 'html': true,
+                  'actions': ['edit', 'delete']}
+              })
               #set ($options = {'className': 'Movies.Code.MoviesClass',
                 'translationPrefix': 'movies.livetable.'})
               #livetable('movies' $columns $columnsProperties $options)
               {{/velocity}}
-            Column labels resolve through translation keys (movies.livetable.doc.title, ...);
-            without a translations document they fall back to raw keys - cosmetic, not fatal.
+            The _actions column stays EMPTY unless its 'actions' property lists the row
+            actions, as above. A TextArea field's column needs
+            {'sortable': false, 'filterable': false, 'html': true}.
+
+        TRANSLATIONS
+            Column headers and action labels resolve through the translationPrefix keys;
+            without a translations document the live table shows the raw keys
+            (movies.livetable.genre, ...). The translations document is a properties file,
+            one key=value per line - field-label keys are <class fullName>_<field> (the
+            sheet's displayPrettyName uses them too) and <class fullName>_<field>_<value>
+            for list values:
+              write_document reference=Movies.Code.MoviesTranslations hidden=true
+                Movies.Code.MoviesClass_genre=Genre
+                Movies.Code.MoviesClass_genre_drama=Drama
+                movies.livetable.doc.title=Title
+                movies.livetable.genre=Genre
+                movies.livetable._actions=Actions
+                movies.livetable._actions.edit=Edit
+                movies.livetable._actions.delete=Delete
+                movies.livetable.emptyvalue=-
+            The keys take effect once the document is registered as a translation bundle
+            with an XWiki.TranslationDocumentClass object on it (base_version: the version
+            echoed when you wrote the page - it exists now):
+              write_object reference=Movies.Code.MoviesTranslations
+                  class=XWiki.TranslationDocumentClass fields={"scope": "WIKI"} base_version=...
+            scope WIKI needs wiki-admin rights; without them save scope USER (the labels
+            then apply only to you) and ask an admin to switch it to WIKI.
 
         FULL AWM CITIZENSHIP
             Two objects on the home page make the app a first-class AWM application - AWM's own
@@ -317,9 +351,9 @@ public class MCPManTool implements MCPTool
             Sheets and the home page run Velocity, executed with the rights of their last AUTHOR -
             the user this MCP session acts as. Without script right the pages save fine but render
             nothing useful. Space rights (WebPreferences) and rights objects are refused by the
-            write tools: ask a wiki administrator. A translations document registered wiki-wide and
-            an Applications-panel entry both need wiki-admin rights to take effect - leave them to
-            an admin or skip them.
+            write tools: ask a wiki administrator. An Applications-panel entry needs wiki-admin
+            rights to take effect - leave it to an admin or skip it; for translations use the
+            scope fallback described in TRANSLATIONS.
 
         READING AN EXISTING APP
             get_schema with no arguments catalogs the classes; get_schema class=... shows the
