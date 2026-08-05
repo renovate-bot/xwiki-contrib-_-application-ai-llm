@@ -238,7 +238,8 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
 
         String text = textOf(result);
         assertTrue(text.contains("Created Blog.BlogPostClass object 0 on document " + CANONICAL), text);
-        assertTrue(text.contains("Version: " + versionBefore + " -> " + saved.getVersion()), text);
+        assertTrue(text.contains("Version: " + versionBefore + " -> " + saved.getVersion()
+            + " (base_version for next change: " + saved.getVersion() + ")"), text);
         assertTrue(text.contains("Fields set: title, published"), text);
         assertTrue(text.contains("Compare: " + VIEW_URL), text);
     }

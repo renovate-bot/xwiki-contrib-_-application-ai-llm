@@ -451,12 +451,13 @@ public class MCPWriteDocumentTool implements MCPTool
         StringBuilder sb = new StringBuilder();
         if (outcome.creating()) {
             sb.append("Created ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
-            sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion()).append(NEW_LINE);
+            sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion())
+                .append(MCPWriteSupport.baseVersionHint(outcome.newVersion())).append(NEW_LINE);
             sb.append("Syntax: ").append(outcome.syntaxId());
         } else {
             sb.append("Overwrote ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
             sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.oldVersion()).append(" -> ")
-                .append(outcome.newVersion());
+                .append(outcome.newVersion()).append(MCPWriteSupport.baseVersionHint(outcome.newVersion()));
         }
         String titleEcho =
             MCPWriteSupport.titleLine(outcome.creating(), outcome.titleChanged(), request.title());

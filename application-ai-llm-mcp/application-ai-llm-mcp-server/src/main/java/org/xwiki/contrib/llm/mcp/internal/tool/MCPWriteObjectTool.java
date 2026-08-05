@@ -478,12 +478,14 @@ public class MCPWriteObjectTool implements MCPTool
         if (creatingDocument) {
             sb.append("Created document ").append(canonicalRef).append(" with ").append(className)
                 .append(OBJECT_INFIX).append(applied.number()).append(PERIOD).append(NEW_LINE);
-            sb.append(MCPWriteSupport.VERSION_PREFIX).append(newVersion);
+            sb.append(MCPWriteSupport.VERSION_PREFIX).append(newVersion)
+                .append(MCPWriteSupport.baseVersionHint(newVersion));
         } else {
             sb.append(applied.createdObject() ? "Created " : "Updated ").append(className)
                 .append(OBJECT_INFIX).append(applied.number()).append(ON_DOCUMENT_INFIX).append(canonicalRef)
                 .append(PERIOD).append(NEW_LINE);
-            sb.append(MCPWriteSupport.VERSION_PREFIX).append(oldVersion).append(" -> ").append(newVersion);
+            sb.append(MCPWriteSupport.VERSION_PREFIX).append(oldVersion).append(" -> ").append(newVersion)
+                .append(MCPWriteSupport.baseVersionHint(newVersion));
         }
         if (statusLines != null) {
             sb.append(NEW_LINE).append(statusLines);

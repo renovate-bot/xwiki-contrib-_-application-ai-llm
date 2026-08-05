@@ -73,6 +73,16 @@ final class MCPWriteSupport
     static final String VERSION_PREFIX = "Version: ";
 
     /**
+     * Prefix of the hint appended to every version echo, naming the saved version as the
+     * {@code base_version} the agent must pass on its next change to the same document. Chained writes
+     * to one document are the dominant agent workflow (building a class field by field, then binding
+     * and registering objects on it), and passing a version made stale by the agent's own previous
+     * write is the most common recovered error observed in model benchmarks: the fresh version was
+     * always echoed, but nothing marked it as the value to pass next.
+     */
+    static final String NEXT_BASE_VERSION_PREFIX = " (base_version for next change: ";
+
+    /**
      * The space-level preferences document name (space rights overrides), part of the sensitive-document
      * denylist. Also the single child page the delete tool's {@code WebPreferences} exception concerns.
      */
@@ -639,6 +649,19 @@ final class MCPWriteSupport
     {
         return "Version conflict: " + subject + " is now at version " + currentVersion + " but base_version is "
             + baseVersion + ". Re-read it with get_document and " + retryAction;
+    }
+
+    /**
+     * Formats the hint appended to a write result's version echo: the version to pass as
+     * {@code base_version} on the agent's next change to the same document. See
+     * {@link #NEXT_BASE_VERSION_PREFIX} for why it is spelled out on every write.
+     *
+     * @param newVersion the version the write produced
+     * @return the parenthesized hint, appended directly after the echoed version
+     */
+    static String baseVersionHint(String newVersion)
+    {
+        return NEXT_BASE_VERSION_PREFIX + newVersion + ")";
     }
 
     /**

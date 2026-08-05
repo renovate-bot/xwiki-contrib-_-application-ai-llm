@@ -203,6 +203,42 @@ class MCPWriteSchemaToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void versionEchoNamesTheNextBaseVersionAcrossAChain(MockitoOldcore oldcore) throws Exception
+    {
+        McpSchema.CallToolResult created = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, ADD_FIELD,
+            FIELD_KEY, TITLE_FIELD, TYPE_KEY, "String"));
+        String createdVersion = currentVersion(oldcore);
+        String createdText = textOf(created);
+        assertTrue(createdText.contains(
+            "Version: " + createdVersion + " (base_version for next change: " + createdVersion + ")"), createdText);
+        // The app nudge fires exactly once, on the add_field that creates the class document.
+        assertTrue(createdText.contains("Building an app? \"man awm\" describes the standard structure "
+            + "(sheet binding, template, Create dialog, home-page live table)."), createdText);
+
+        McpSchema.CallToolResult updated = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, ADD_FIELD,
+            FIELD_KEY, "count", TYPE_KEY, "Number", BASE_VERSION_KEY, createdVersion));
+        String updatedVersion = currentVersion(oldcore);
+        String updatedText = textOf(updated);
+        assertTrue(updatedText.contains("Version: " + createdVersion + " -> " + updatedVersion
+            + " (base_version for next change: " + updatedVersion + ")"), updatedText);
+        assertFalse(updatedText.contains("Building an app?"), updatedText);
+    }
+
+    @Test
+    void firstFieldOnPreexistingEmptyDocumentStillNudges(MockitoOldcore oldcore) throws Exception
+    {
+        storeFieldlessDocument(oldcore);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, ADD_FIELD,
+            FIELD_KEY, TITLE_FIELD, TYPE_KEY, "String", BASE_VERSION_KEY, currentVersion(oldcore)));
+
+        assertNotEquals(Boolean.TRUE, result.isError());
+        // The nudge keys on first-field, not document creation: a class page created via
+        // write_document (or surviving a lost create race) must still surface the awm reference.
+        assertTrue(textOf(result).contains("Building an app?"), textOf(result));
+    }
+
+    @Test
     void addFieldOnNewDocumentStampsTheWikiDefaultLocale(MockitoOldcore oldcore) throws Exception
     {
         doReturn(Locale.GERMAN).when(oldcore.getSpyXWiki()).getDefaultLocale(any());

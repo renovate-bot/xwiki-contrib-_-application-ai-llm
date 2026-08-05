@@ -187,7 +187,8 @@ class MCPDeleteObjectToolTest extends AbstractMCPWriteToolTest
 
         String text = textOf(result);
         assertTrue(text.contains("Deleted Blog.CommentClass object 0 from document " + CANONICAL), text);
-        assertTrue(text.contains("Version: " + versionBefore + " -> " + saved.getVersion()), text);
+        assertTrue(text.contains("Version: " + versionBefore + " -> " + saved.getVersion()
+            + " (base_version for next change: " + saved.getVersion() + ")"), text);
         assertTrue(text.contains("Compare: " + VIEW_URL), text);
         assertTrue(text.contains("history"), text);
         assertTrue(text.contains("reverted"), text);

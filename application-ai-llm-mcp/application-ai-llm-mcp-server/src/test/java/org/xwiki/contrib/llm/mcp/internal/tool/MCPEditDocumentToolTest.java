@@ -252,6 +252,7 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
 
         String text = textOf(result);
         assertTrue(text.contains("Created document " + CANONICAL), text);
+        assertTrue(text.contains(" (base_version for next change: " + saved.getVersion() + ")"), text);
         assertTrue(text.contains("View: " + VIEW_URL), text);
     }
 

@@ -701,7 +701,8 @@ public class MCPEditDocumentTool implements MCPTool
         String canonicalRef, String titleEcho, String hiddenEcho)
     {
         sb.append("Created ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
-        sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion());
+        sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.newVersion())
+            .append(MCPWriteSupport.baseVersionHint(outcome.newVersion()));
         if (titleEcho != null) {
             sb.append(NEW_LINE).append(titleEcho);
         }
@@ -726,7 +727,8 @@ public class MCPEditDocumentTool implements MCPTool
     {
         sb.append("Updated ").append(target).append(canonicalRef).append(PERIOD).append(NEW_LINE);
         sb.append(MCPWriteSupport.VERSION_PREFIX).append(outcome.oldVersion()).append(" -> ")
-            .append(outcome.newVersion()).append(NEW_LINE);
+            .append(outcome.newVersion()).append(MCPWriteSupport.baseVersionHint(outcome.newVersion()))
+            .append(NEW_LINE);
         sb.append(outcome.editCount()).append(" edit(s) applied");
         int totalReplacements = outcome.appliedReplacements().stream().mapToInt(AppliedEdit::count).sum();
         if (totalReplacements > outcome.editCount()) {

@@ -316,7 +316,8 @@ public class MCPDeleteObjectTool implements MCPTool
         sb.append("Deleted ").append(MCPToolSupport.stripLineBreaks(localClassName)).append(OBJECT_INFIX)
             .append(objectNumber).append(" from document ")
             .append(MCPToolSupport.stripLineBreaks(this.serializer.serialize(ref))).append('.').append(NEW_LINE);
-        sb.append(MCPWriteSupport.VERSION_PREFIX).append(oldVersion).append(" -> ").append(newVersion);
+        sb.append(MCPWriteSupport.VERSION_PREFIX).append(oldVersion).append(" -> ").append(newVersion)
+            .append(MCPWriteSupport.baseVersionHint(newVersion));
         String urlLine = MCPWriteSupport.buildReviewLine(this.documentAccessBridge, this.logger, ref, false,
             oldVersion, newVersion);
         if (urlLine != null) {

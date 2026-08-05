@@ -124,6 +124,19 @@ public class MCPWriteSchemaTool implements MCPTool
 
     private static final String ARROW = " -> ";
 
+    /**
+     * Appended once, when an add_field call gives a class its FIRST field - the moment an agent is
+     * demonstrably starting an application. Model benchmarks showed that agents given a vague
+     * "make me an app" request build class + entries + live table but skip the sheet binding,
+     * hidden flags and AWM descriptor unless they consult the awm reference page; this line
+     * surfaces that page at exactly that decision point. First-field, not document-creation: agents
+     * also reach an empty class through write_document or after a lost create race, and the nudge
+     * must survive those routes. Deliberately non-imperative: a new class is not always an app,
+     * and the agent may be doing something precise on purpose.
+     */
+    private static final String APP_NUDGE = "Building an app? \"man awm\" describes the standard structure "
+        + "(sheet binding, template, Create dialog, home-page live table).";
+
     private static final String REFUSING_PREFIX = "Refusing to change the definition of ";
 
     /**
@@ -201,7 +214,8 @@ public class MCPWriteSchemaTool implements MCPTool
             .description("Define or change an XWiki class (XClass): add a field, modify a field's name and "
                 + "attributes, or remove a field. Powerful and off by default - it changes the schema every "
                 + "object of the class obeys. See man write_schema before using it. get_schema shows the "
-                + "classes and their fields.")
+                + "classes and their fields. Building an app around the class? A class alone does not render "
+                + "or list entries - man awm describes the pieces a working app needs.")
             .build();
     }
 
@@ -390,6 +404,7 @@ public class MCPWriteSchemaTool implements MCPTool
     private String saveAdd(XWikiDocument editable, Request request, DocumentReference ref,
         String localName, boolean creating, String oldVersion, XWikiContext xcontext) throws XWikiException
     {
+        boolean firstField = editable.getXClass().getPropertyNames().length == 0;
         String rendered = MCPSchemaWriteSupport.addField(editable, request.field(), request.type(),
             request.prettyName(), request.attributes(), localName, xcontext);
         String newVersion = save(editable, request, creating,
@@ -397,7 +412,8 @@ public class MCPWriteSchemaTool implements MCPTool
                 + strip(localName), xcontext);
         String headline = "Added " + FIELD_PREFIX + strip(request.field()) + QUOTE + " to" + CLASS_INFIX
             + strip(localName) + QUOTE + PERIOD;
-        return fieldSuccess(headline, ref, rendered, creating, oldVersion, newVersion);
+        String result = fieldSuccess(headline, ref, rendered, creating, oldVersion, newVersion);
+        return firstField ? result + NEW_LINE + APP_NUDGE : result;
     }
 
     private String saveModify(XWikiDocument editable, Request request, DocumentReference ref,
@@ -455,6 +471,7 @@ public class MCPWriteSchemaTool implements MCPTool
         } else {
             sb.append(oldVersion).append(ARROW).append(newVersion);
         }
+        sb.append(MCPWriteSupport.baseVersionHint(newVersion));
         String urlLine = MCPWriteSupport.buildReviewLine(this.documentAccessBridge, this.logger, ref, creating,
             oldVersion, newVersion);
         if (urlLine != null) {

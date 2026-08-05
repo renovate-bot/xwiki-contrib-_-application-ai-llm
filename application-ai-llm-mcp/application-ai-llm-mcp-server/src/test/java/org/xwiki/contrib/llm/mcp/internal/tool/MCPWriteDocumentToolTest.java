@@ -184,7 +184,7 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
 
         String text = textOf(result);
         assertTrue(text.contains("Created document " + CANONICAL), text);
-        assertTrue(text.contains("Version: 1.1"), text);
+        assertTrue(text.contains("Version: 1.1 (base_version for next change: 1.1)"), text);
         assertTrue(text.contains("Syntax: " + freshDoc.getSyntax().toIdString()), text);
         assertTrue(text.contains("View: " + VIEW_URL), text);
     }
@@ -331,7 +331,8 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
 
         String text = textOf(result);
         assertTrue(text.contains("Overwrote document " + CANONICAL), text);
-        assertTrue(text.contains(currentVersion + " -> " + saved.getVersion()), text);
+        assertTrue(text.contains(currentVersion + " -> " + saved.getVersion()
+            + " (base_version for next change: " + saved.getVersion() + ")"), text);
         assertTrue(text.contains("Compare: " + COMPARE_URL), text);
     }
 
