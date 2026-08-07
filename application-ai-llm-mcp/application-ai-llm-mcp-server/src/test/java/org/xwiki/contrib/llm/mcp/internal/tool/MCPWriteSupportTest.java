@@ -21,6 +21,7 @@ package org.xwiki.contrib.llm.mcp.internal.tool;
 
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
+import java.time.Duration;
 import java.util.Locale;
 
 import org.junit.jupiter.api.Test;
@@ -40,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -49,14 +51,18 @@ import static org.xwiki.contrib.llm.mcp.internal.tool.MCPToolTestUtils.textOf;
 /**
  * Tests for {@link MCPWriteSupport}: the version-comment construction (the {@code [AI] } prefix is a
  * stable contract, pinned literally here), the minor-edit policy, the wiki-switch scaffold's
- * failure-path restore, and the save-failure recovery predicates. The scaffold's success path, the
- * shared message fragments and the recovery's end-to-end wiring are covered through the write tools'
- * tests.
+ * failure-path restore and lock release, and the save-failure recovery predicates. The scaffold's
+ * success path, the shared message fragments and the recovery's end-to-end wiring are covered through
+ * the write tools' tests; the write lock's lost-update closure is proven end-to-end in
+ * {@link MCPWriteDocumentToolTest}.
  *
  * @version $Id$
  */
 class MCPWriteSupportTest
 {
+    // Same document (and so same lock stripe) as MCPWriteDocumentToolTest's fixture: fine while
+    // surefire runs test classes sequentially, but parallel class execution would let that suite's
+    // parked save cross-trip this one's preemptive timeouts through the shared static lock pool.
     private static final DocumentReference DOC_REFERENCE =
         new DocumentReference("xwiki", "Sandbox", "WebHome");
 
@@ -87,6 +93,56 @@ class MCPWriteSupportTest
         InOrder order = inOrder(xcontext);
         order.verify(xcontext).setWikiId("second");
         order.verify(xcontext).setWikiId("xwiki");
+    }
+
+    @Test
+    void inTargetWikiReleasesTheDocumentLockWhenTheBodyThrows() throws Exception
+    {
+        XWikiContext xcontext = lockTestContext();
+
+        assertThrows(XWikiException.class, () -> MCPWriteSupport.inTargetWiki(xcontext, DOC_REFERENCE,
+            (ctx, doc) -> {
+                throw new XWikiException(0, 0, SAVE_FAILED);
+            }));
+
+        // The follow-up runs on another thread (assertTimeoutPreemptively executes on its own thread):
+        // a leaked stripe would park it past the timeout, while a same-thread reacquisition would mask
+        // the leak through reentrancy.
+        McpSchema.CallToolResult result = assertTimeoutPreemptively(Duration.ofSeconds(5),
+            () -> MCPWriteSupport.inTargetWiki(xcontext, DOC_REFERENCE,
+                (ctx, doc) -> MCPToolSupport.result("second write ran")));
+        assertEquals("second write ran", textOf(result));
+    }
+
+    @Test
+    void sequentialWritesToTheSameDocumentReacquireTheLockCleanly() throws Exception
+    {
+        XWikiContext xcontext = lockTestContext();
+
+        McpSchema.CallToolResult first = MCPWriteSupport.inTargetWiki(xcontext, DOC_REFERENCE,
+            (ctx, doc) -> MCPToolSupport.result("first write"));
+        // Cross-thread like real sequential tool calls, so the pass does not rest on reentrancy.
+        McpSchema.CallToolResult second = assertTimeoutPreemptively(Duration.ofSeconds(5),
+            () -> MCPWriteSupport.inTargetWiki(xcontext, DOC_REFERENCE,
+                (ctx, doc) -> MCPToolSupport.result("second write")));
+
+        assertEquals("first write", textOf(first));
+        assertEquals("second write", textOf(second));
+    }
+
+    /**
+     * Builds the minimal context the lock tests run the scaffold with: an authenticated user, a stable
+     * context wiki and a loadable (existing, so never locale-stamped) target document.
+     */
+    private static XWikiContext lockTestContext() throws Exception
+    {
+        XWikiContext xcontext = mock(XWikiContext.class);
+        XWiki xwiki = mock(XWiki.class);
+        when(xcontext.getUserReference()).thenReturn(new DocumentReference("xwiki", "XWiki", "User"));
+        when(xcontext.getWikiId()).thenReturn("xwiki");
+        when(xcontext.getWiki()).thenReturn(xwiki);
+        when(xwiki.getDocument(DOC_REFERENCE, xcontext)).thenReturn(mock(XWikiDocument.class));
+        return xcontext;
     }
 
     @Test

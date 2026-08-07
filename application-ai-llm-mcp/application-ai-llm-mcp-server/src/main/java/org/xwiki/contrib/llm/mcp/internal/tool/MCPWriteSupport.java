@@ -23,6 +23,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.Locale;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
@@ -200,6 +201,40 @@ final class MCPWriteSupport
      */
     private static final String SQLSTATE_TRANSACTION_ROLLBACK = "40";
 
+    /**
+     * Number of stripes in {@link #LOCKS}: writes to different documents almost always proceed in
+     * parallel, while a rare stripe collision between two documents just serializes two short saves
+     * harmlessly.
+     */
+    private static final int LOCK_STRIPES = 256;
+
+    /**
+     * Striped per-document write locks serializing every load-check-persist sequence run through
+     * {@link #inTargetWiki(XWikiContext, DocumentReference, WriteBody)}, keyed by the locale-free
+     * target reference (see {@link #lockFor(DocumentReference)}). This is what makes
+     * {@code base_version} an actual optimistic lock for writes going through THIS server instance:
+     * without it, two concurrent writers carrying the same stale version both pass the load-time check
+     * and both save - a silent lost update. With it, the second writer loads only after the first
+     * one's save is committed, sees the fresh version and is refused with the version-conflict
+     * message. The scope is single-JVM only: on a cluster, concurrent writers on different nodes fall
+     * back to the platform baseline (the database primary key still arbitrates creates, and
+     * same-document updates are last-write-wins - matching the platform's own save lock, the
+     * node-local per-document-id {@link ReentrantLock} map in {@code XWikiHibernateStore}). The key
+     * drops the locale, so all translation rows and the object/schema writes of one document
+     * serialize together - deliberately coarse. The fixed stripe array keeps the memory bounded by
+     * design, unlike a per-document lock map. The acquisition is non-interruptible: if a save ever
+     * hangs (database outage) while holding a stripe, colliding writes park until the holder returns,
+     * matching the platform save lock's own behavior - the accepted trade-off for never failing a
+     * write that merely had to wait.
+     */
+    private static final ReentrantLock[] LOCKS = new ReentrantLock[LOCK_STRIPES];
+
+    static {
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            LOCKS[i] = new ReentrantLock();
+        }
+    }
+
     private MCPWriteSupport()
     {
     }
@@ -246,11 +281,13 @@ final class MCPWriteSupport
 
     /**
      * Runs a tool-specific write body against the loaded target document, inside the target wiki:
-     * refuses when no authenticated user is in the context, switches the context wiki to the
-     * reference's wiki so save-time rights and class resolution are correct for a cross-wiki write,
-     * loads the document (stamping the wiki's default locale on a document about to be created, see
-     * {@link #stampDefaultLocaleOnCreation}), runs the body and restores the original context wiki
-     * afterwards (also when the body throws).
+     * refuses when no authenticated user is in the context, takes the target document's stripe of
+     * {@link #LOCKS} around the whole load-check-persist sequence (a plain blocking acquisition -
+     * writes are short, so waiting behind a colliding write beats failing it), switches the context
+     * wiki to the reference's wiki so save-time rights and class resolution are correct for a
+     * cross-wiki write, loads the document (stamping the wiki's default locale on a document about to
+     * be created, see {@link #stampDefaultLocaleOnCreation}), runs the body and restores the original
+     * context wiki and releases the lock afterwards (also when the body throws).
      *
      * @param xcontext the XWiki context, possibly {@code null} when none is available
      * @param ref the resolved reference of the target document
@@ -264,15 +301,35 @@ final class MCPWriteSupport
         if (xcontext == null || xcontext.getUserReference() == null) {
             return MCPToolSupport.errorResult("No authenticated user in context.");
         }
-        String originalWiki = xcontext.getWikiId();
+        ReentrantLock lock = lockFor(ref);
+        lock.lock();
         try {
-            xcontext.setWikiId(ref.getWikiReference().getName());
-            XWikiDocument xdoc = xcontext.getWiki().getDocument(ref, xcontext);
-            stampDefaultLocaleOnCreation(xcontext, xdoc);
-            return body.write(xcontext, xdoc);
+            String originalWiki = xcontext.getWikiId();
+            try {
+                xcontext.setWikiId(ref.getWikiReference().getName());
+                XWikiDocument xdoc = xcontext.getWiki().getDocument(ref, xcontext);
+                stampDefaultLocaleOnCreation(xcontext, xdoc);
+                return body.write(xcontext, xdoc);
+            } finally {
+                xcontext.setWikiId(originalWiki);
+            }
         } finally {
-            xcontext.setWikiId(originalWiki);
+            lock.unlock();
         }
+    }
+
+    /**
+     * Picks the stripe of {@link #LOCKS} guarding the given document. The key is the reference
+     * WITHOUT its locale ({@link DocumentReference#hashCode()} covers the wiki, so same-named
+     * documents of different wikis map independently), making all writes addressing one document -
+     * every translation row included - contend on the same stripe.
+     *
+     * @param ref the resolved reference of the target document
+     * @return the stripe lock guarding the document
+     */
+    private static ReentrantLock lockFor(DocumentReference ref)
+    {
+        return LOCKS[Math.floorMod(ref.withoutLocale().hashCode(), LOCK_STRIPES)];
     }
 
     /**
@@ -754,7 +811,7 @@ final class MCPWriteSupport
      * Best-effort fresh existence check of the written row after a FAILED save, used to tell a lost
      * create race (the row exists now - another write won) from other save failures. The row is
      * re-loaded through the store: the failed save invalidated the document cache entries in its own
-     * cleanup, so this load sees the winner's committed row, and the load is safe outside the
+     * cleanup, so this load sees the winner's committed row, and the load does not depend on the
      * target-wiki switch because {@code XWiki#getDocument} derives the wiki from the reference. The
      * in-memory document the failed save corrupted (version bumped, dirty flags cleared) is never
      * consulted. A locale selects the exact translation row, mirroring the write tools' own row

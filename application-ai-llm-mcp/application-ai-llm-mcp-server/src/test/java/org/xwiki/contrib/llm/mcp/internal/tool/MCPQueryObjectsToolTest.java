@@ -356,6 +356,43 @@ class MCPQueryObjectsToolTest extends AbstractMCPToolTest
     }
 
     @Test
+    void withoutSelectTheFieldValuesHintClosesTheOutput() throws Exception
+    {
+        stubClassDocument(WIKI, blogClass());
+        stubResult(POST_ONE, 0, WIKI, null);
+
+        String output = callText(Map.of("class", BLOG_CLASS));
+
+        // The hint is the last line, after the footer: a no-select result shows no field values, and
+        // without the pointer agents read the bare headers as "the objects carry no data".
+        assertTrue(output.endsWith("Found 1 matching object. Showing 1 from offset 0.\n"
+            + "Field values are not shown. Pass select=[\"field\", ...] to include them; get_schema "
+            + "lists the available fields."), output);
+    }
+
+    @Test
+    void withSelectNoFieldValuesHintIsAppended() throws Exception
+    {
+        stubClassDocument(WIKI, blogClass());
+        stubResult(POST_ONE, 0, WIKI, null);
+
+        String output = callText(Map.of("class", BLOG_CLASS, "select", List.of(TITLE_FIELD)));
+
+        assertFalse(output.contains("Field values are not shown"), output);
+    }
+
+    @Test
+    void zeroMatchesCarryNoFieldValuesHint() throws Exception
+    {
+        stubClassDocument(WIKI, blogClass());
+
+        String output = callText(Map.of("class", BLOG_CLASS));
+
+        // The empty-results message stays untouched: there is no rendered row to explain.
+        assertFalse(output.contains("Field values are not shown"), output);
+    }
+
+    @Test
     void deniedRowIsDroppedEntirelyAndTheTotalCountsOnlyViewableMatches() throws Exception
     {
         stubClassDocument(WIKI, blogClass());

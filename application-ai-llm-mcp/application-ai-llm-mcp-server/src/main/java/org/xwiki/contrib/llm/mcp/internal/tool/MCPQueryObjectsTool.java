@@ -142,6 +142,16 @@ public class MCPQueryObjectsTool implements MCPTool
         + "-row fetch ceiling: matches beyond it are not counted.";
 
     /**
+     * The closing hint of a class-scoped result rendered without {@code select}: no field values are
+     * shown in that mode (only reference, object number, version and title), and observed agent runs
+     * read such results as "the objects carry no data". Appended after the footer, only when at least
+     * one object row was rendered; the inventory mode never carries it, because {@code select} is
+     * class-scoped and refused there.
+     */
+    private static final String NO_SELECT_HINT = "Field values are not shown. Pass select=[\"field\", ...] "
+        + "to include them; get_schema lists the available fields.";
+
+    /**
      * The agent-facing result message for a failed page or count query. The root cause (schema/driver
      * detail) stays in the server logs, off the wire.
      */
@@ -419,8 +429,11 @@ public class MCPQueryObjectsTool implements MCPTool
         String body = MCPSourceText.budgeted("OBJECTS of class " + QUOTE
             + MCPTextGuards.fragment(this.localSerializer.serialize(classRef)) + QUOTE + IN_WIKI
             + QUOTE + targetWiki + HEADER_END + String.join(DOUBLE_NEW_LINE, blocks));
-        return MCPToolSupport.result(body + DOUBLE_NEW_LINE
-            + footer(total, blocks.size(), hitCeiling, request));
+        String tail = footer(total, blocks.size(), hitCeiling, request);
+        if (CollectionUtils.isEmpty(request.select()) && !blocks.isEmpty()) {
+            tail += NEW_LINE + NO_SELECT_HINT;
+        }
+        return MCPToolSupport.result(body + DOUBLE_NEW_LINE + tail);
     }
 
     /**

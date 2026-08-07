@@ -22,6 +22,9 @@ package org.xwiki.contrib.llm.mcp.internal.tool;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -1048,6 +1051,60 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
         assertTrue(this.logCapture.getMessage(0).contains("MCP write_document tool failed"),
             this.logCapture.getMessage(0));
         assertTrue(this.logCapture.getMessage(0).contains("connection reset"), this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void concurrentWritesWithTheSameStaleBaseVersionLoseNoUpdate(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, TITLE);
+        String staleVersion = loadDocument(oldcore).getVersion();
+        CountDownLatch saveEntered = new CountDownLatch(1);
+        CountDownLatch releaseSave = new CountDownLatch(1);
+        AtomicInteger saves = new AtomicInteger();
+        // The save parks mid-flight, then commits the version bump into the fixture: the shape of a
+        // slow save holding the per-document write lock while a second writer arrives. The counter
+        // sees only the writers' saves - the stub is installed after the fixture's setup save.
+        doAnswer(invocation -> {
+            saves.incrementAndGet();
+            saveEntered.countDown();
+            assertTrue(releaseSave.await(5, TimeUnit.SECONDS), "the parked save was never released");
+            XWikiDocument saved = invocation.<XWikiDocument>getArgument(0);
+            saved.incrementVersion();
+            saved.setNew(false);
+            XWikiDocument committed = saved.clone();
+            committed.setNew(false);
+            oldcore.getDocuments().put(committed.getDocumentReferenceWithLocale(), committed);
+            return null;
+        }).when(oldcore.getSpyXWiki())
+            .saveDocument(any(XWikiDocument.class), anyString(), anyBoolean(), any());
+
+        AtomicReference<McpSchema.CallToolResult> resultA = new AtomicReference<>();
+        AtomicReference<McpSchema.CallToolResult> resultB = new AtomicReference<>();
+        Thread writerA = new Thread(() -> resultA.set(call(Map.of(REFERENCE_KEY, REF,
+            CONTENT_KEY, "body A", BASE_VERSION_KEY, staleVersion))));
+        writerA.start();
+        assertTrue(saveEntered.await(5, TimeUnit.SECONDS), "writer A never reached its save");
+        Thread writerB = new Thread(() -> resultB.set(call(Map.of(REFERENCE_KEY, REF,
+            CONTENT_KEY, "body B", BASE_VERSION_KEY, staleVersion))));
+        writerB.start();
+        writerB.join(300);
+        // Writer B carries the same stale base_version writer A passed its check with; it must be
+        // parked behind writer A, not racing it to a second save.
+        assertTrue(writerB.isAlive(), "writer B completed while writer A held the document lock");
+
+        releaseSave.countDown();
+        writerA.join(5000);
+        writerB.join(5000);
+        assertFalse(writerA.isAlive(), "writer A did not finish");
+        assertFalse(writerB.isAlive(), "writer B did not finish");
+        // The lost update is closed: writer A's save is the only save, and writer B - whose
+        // base_version check ran only after A's save committed - gets the conflict refusal instead of
+        // silently overwriting A's version.
+        assertNotEquals(Boolean.TRUE, resultA.get().isError());
+        assertEquals(Boolean.TRUE, resultB.get().isError());
+        assertTrue(textOf(resultB.get()).contains("Version conflict"), textOf(resultB.get()));
+        assertEquals(1, saves.get(), "only writer A's save may reach the store");
+        assertEquals("body A", loadDocument(oldcore).getContent());
     }
 
     @Test
