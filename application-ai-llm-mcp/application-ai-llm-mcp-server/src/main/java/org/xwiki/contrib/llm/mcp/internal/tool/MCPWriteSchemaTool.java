@@ -388,12 +388,24 @@ public class MCPWriteSchemaTool implements MCPTool
         if (hiddenChanged) {
             MCPWriteSupport.applyHidden(editable, request.hidden());
         }
-        String message = switch (request.operation()) {
-            case ADD_FIELD -> saveAdd(editable, request, ref, localName, creating, oldVersion, xcontext);
-            case MODIFY_FIELD -> saveModify(editable, request, ref, localName, creating, oldVersion, xcontext);
-            case REMOVE_FIELD -> saveRemove(editable, request, ref, localName, creating, oldVersion, xcontext);
-            default -> throw new IllegalArgumentException("Unsupported operation.");
-        };
+        String message;
+        // This try also spans saveRemove's post-save work (orphan disclosure, result formatting), which
+        // must stay non-throwing: an XWikiException after a committed save would be reported as a failure.
+        try {
+            message = switch (request.operation()) {
+                case ADD_FIELD -> saveAdd(editable, request, ref, localName, creating, oldVersion, xcontext);
+                case MODIFY_FIELD -> saveModify(editable, request, ref, localName, creating, oldVersion, xcontext);
+                case REMOVE_FIELD -> saveRemove(editable, request, ref, localName, creating, oldVersion, xcontext);
+                default -> throw new IllegalArgumentException("Unsupported operation.");
+            };
+        } catch (XWikiException e) {
+            McpSchema.CallToolResult rerouted = MCPWriteSupport.reroutedSaveFailure(e, xcontext, ref, null,
+                creating, alreadyExistsMessage(request.reference()), this.logger);
+            if (rerouted != null) {
+                return rerouted;
+            }
+            throw e;
+        }
         String hiddenEcho = MCPWriteSupport.hiddenLine(hiddenChanged, Boolean.TRUE.equals(request.hidden()));
         if (hiddenEcho != null) {
             message += NEW_LINE + hiddenEcho;
@@ -551,8 +563,7 @@ public class MCPWriteSchemaTool implements MCPTool
             return null;
         }
         if (request.baseVersion() == null) {
-            return MCPToolSupport.errorResult("Document " + QUOTE + strip(request.reference()) + QUOTE
-                + " already exists. First read it with get_document and pass the base_version it shows.");
+            return MCPToolSupport.errorResult(alreadyExistsMessage(request.reference()));
         }
         if (!request.baseVersion().equals(currentVersion)) {
             return MCPToolSupport.errorResult(
@@ -560,6 +571,21 @@ public class MCPWriteSchemaTool implements MCPTool
                     request.baseVersion(), "retry."));
         }
         return null;
+    }
+
+    /**
+     * Formats the read-first refusal for an add or modify sent without {@code base_version} on an
+     * existing document. Also the re-routed result of a creating {@code add_field} that lost a create
+     * race (the document provably exists by the time the failure is handled), so the two paths can
+     * never drift apart in wording.
+     *
+     * @param reference the original reference string, echoed neutralized in the message
+     * @return the agent-facing error message
+     */
+    private static String alreadyExistsMessage(String reference)
+    {
+        return "Document " + QUOTE + strip(reference) + QUOTE
+            + " already exists. First read it with get_document and pass the base_version it shows.";
     }
 
     private static String strip(String value)

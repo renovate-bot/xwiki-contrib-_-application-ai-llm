@@ -21,9 +21,11 @@ package org.xwiki.contrib.llm.mcp.internal.tool;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.xwiki.bridge.DocumentAccessBridge;
 import org.xwiki.contrib.llm.mcp.MCPAccessDeniedException;
@@ -66,6 +68,15 @@ final class MCPWriteSupport
      */
     static final String SAVE_FAILED_MESSAGE = "Could not save the document. Try again; if it persists, report "
         + "it to a wiki administrator (details are in the server logs).";
+
+    /**
+     * The agent-facing result message for a save that failed because it collided with a concurrent
+     * write (a database-level integrity or serialization failure under the save), when the collision
+     * cannot be re-routed to a more specific read-first message. Retrying is the right move: the
+     * competing transaction has finished by the time the agent reads this.
+     */
+    static final String CONCURRENT_SAVE_MESSAGE = "Could not save the document: the save collided with another "
+        + "write happening at the same time. Retry the call; sending writes one at a time avoids this.";
 
     /**
      * Prefix of the result line reporting the saved version (or the version transition) of a write.
@@ -176,6 +187,18 @@ final class MCPWriteSupport
     private static final String THE_PREFIX = "the ";
 
     private static final String VIEW_ACTION = "view";
+
+    /**
+     * SQLSTATE class of the integrity-constraint-violation states (e.g. {@code 23505}, a duplicate
+     * key), the signature of a lost same-row create race.
+     */
+    private static final String SQLSTATE_INTEGRITY_VIOLATION = "23";
+
+    /**
+     * SQLSTATE class of the transaction-rollback states (e.g. {@code 40001}, a serialization failure),
+     * the signature of concurrent transactions colliding on overlapping rows.
+     */
+    private static final String SQLSTATE_TRANSACTION_ROLLBACK = "40";
 
     private MCPWriteSupport()
     {
@@ -469,6 +492,22 @@ final class MCPWriteSupport
     }
 
     /**
+     * Decides whether a content write changes nothing and must not save: the written row already
+     * exists and neither its content, its title nor its hidden flag would change. Shared by the
+     * content-writing tools so their no-change guards cannot drift.
+     *
+     * @param creating whether the written row does not exist yet (a creation always saves)
+     * @param contentSame whether the new content equals the row's current content
+     * @param titleChanged whether the title actually changes
+     * @param hiddenChanged whether the hidden flag actually changes
+     * @return whether nothing would change
+     */
+    static boolean isNoOpWrite(boolean creating, boolean contentSame, boolean titleChanged, boolean hiddenChanged)
+    {
+        return !creating && contentSame && !titleChanged && !hiddenChanged;
+    }
+
+    /**
      * Decides whether a save is recorded as a minor edit. A creation is a normal (major) save - a new
      * document is version 1.1 regardless, so an explicit {@code major} request is accepted and ignored.
      * A subsequent save is minor unless the caller explicitly asks for a major version, so iterative
@@ -662,6 +701,130 @@ final class MCPWriteSupport
     static String baseVersionHint(String newVersion)
     {
         return NEXT_BASE_VERSION_PREFIX + newVersion + ")";
+    }
+
+    /**
+     * Tests whether the given failure is a failed document save: module
+     * {@link XWikiException#MODULE_XWIKI_STORE} and code
+     * {@link XWikiException#ERROR_XWIKI_STORE_HIBERNATE_SAVING_DOC}. The platform throws this pair at
+     * two sites: the store wraps a failed Hibernate save ({@code XWikiHibernateStore#saveXWikiDoc}),
+     * and {@code XWiki#beforeSave} throws it when an event listener cancels the save. A listener veto
+     * carries no SQL cause and leaves no committed row, so it always falls through both recovery
+     * branches to the generic {@link #SAVE_FAILED_MESSAGE} path - any new re-route added on this gate
+     * must preserve that. Anything else (a failed load, an unrelated store error) is not a candidate
+     * for recovery at all.
+     *
+     * @param e the failure the tool caught
+     * @return whether the failure is a failed document save
+     */
+    static boolean isStorageSaveError(XWikiException e)
+    {
+        return e.getModule() == XWikiException.MODULE_XWIKI_STORE
+            && e.getCode() == XWikiException.ERROR_XWIKI_STORE_HIBERNATE_SAVING_DOC;
+    }
+
+    /**
+     * Tests whether a failed save's cause chain carries a database-level concurrency collision: any
+     * {@link SQLException} whose SQLSTATE is in class {@code 23} (integrity constraint violation, e.g.
+     * the duplicate INSERT of a lost create race) or class {@code 40} (transaction rollback, e.g. a
+     * serialization failure between colliding transactions). The whole chain is walked - a
+     * {@code BatchUpdateException} or a driver wrapper can interpose at any depth, so matching at a
+     * fixed depth would miss real collisions. Only the {@code getCause()} chain is walked;
+     * {@code SQLException#getNextException()} siblings are deliberately not, because Hibernate hands
+     * over the specific {@link SQLException} as the cause and {@code BatchUpdateException} carries its
+     * own SQLSTATE. Only {@code java.sql} types are inspected, never Hibernate ones, so the check does
+     * not depend on the store implementation's exception classes.
+     *
+     * @param e the failure the tool caught
+     * @return whether the chain carries a collision-class {@link SQLException}
+     */
+    static boolean isConcurrencyCollision(Throwable e)
+    {
+        for (Throwable candidate : ExceptionUtils.getThrowableList(e)) {
+            if (candidate instanceof SQLException sql && sql.getSQLState() != null
+                && (sql.getSQLState().startsWith(SQLSTATE_INTEGRITY_VIOLATION)
+                    || sql.getSQLState().startsWith(SQLSTATE_TRANSACTION_ROLLBACK))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Best-effort fresh existence check of the written row after a FAILED save, used to tell a lost
+     * create race (the row exists now - another write won) from other save failures. The row is
+     * re-loaded through the store: the failed save invalidated the document cache entries in its own
+     * cleanup, so this load sees the winner's committed row, and the load is safe outside the
+     * target-wiki switch because {@code XWiki#getDocument} derives the wiki from the reference. The
+     * in-memory document the failed save corrupted (version bumped, dirty flags cleared) is never
+     * consulted. A locale selects the exact translation row, mirroring the write tools' own row
+     * loading; {@code null} addresses the default row. A failure inside the check is logged at debug
+     * and reported as non-existence, which falls through to the generic failure message.
+     *
+     * @param reference the locale-free reference of the written document
+     * @param locale the written translation row's locale, or {@code null} for the default row
+     * @param xcontext the XWiki context
+     * @param logger the calling tool's logger, for the debug trace of a failed re-check
+     * @return whether the written row exists now
+     */
+    static boolean existsFresh(DocumentReference reference, Locale locale, XWikiContext xcontext, Logger logger)
+    {
+        if (xcontext == null) {
+            return false;
+        }
+        try {
+            DocumentReference rowReference =
+                locale == null ? reference : new DocumentReference(reference, locale);
+            return !xcontext.getWiki().getDocument(rowReference, xcontext).isNew();
+        } catch (XWikiException e) {
+            logger.debug("MCP write support could not re-check document existence after a failed save", e);
+            return false;
+        }
+    }
+
+    /**
+     * Maps a FAILED save to a more helpful agent-facing result than the generic failure message, or
+     * {@code null} when no re-route applies - the caller then rethrows, so the tool's ordinary failure
+     * handling (the generic warn plus {@link #SAVE_FAILED_MESSAGE}) stays byte-identical for every
+     * unrecognized failure. Two re-routes exist, tried in order on a storage-level save failure
+     * ({@link #isStorageSaveError(XWikiException)}):
+     * a creating save whose row {@link #existsFresh(DocumentReference, Locale, XWikiContext, Logger)
+     * exists now} lost a create race and returns the calling tool's own read-first message (the same
+     * wording its pre-save exists-guard produces), and a
+     * {@link #isConcurrencyCollision(Throwable) database-level collision} returns
+     * {@link #CONCURRENT_SAVE_MESSAGE}. Each re-route logs a warn naming what happened (with the root
+     * cause only) plus the full exception at debug, under the calling tool's logger, so a re-routed
+     * failure is as visible in the server logs as a generic one.
+     *
+     * @param e the failure the save threw
+     * @param xcontext the XWiki context
+     * @param ref the locale-free reference of the written document
+     * @param locale the written translation row's locale, or {@code null} for the default row
+     * @param creating whether the failed save was creating its row
+     * @param existsMessage the calling tool's read-first message for the create-race re-route; may be
+     *            {@code null} when {@code creating} is always {@code false} for the caller
+     * @param logger the calling tool's logger
+     * @return the re-routed result, or {@code null} when the caller must rethrow
+     */
+    static McpSchema.CallToolResult reroutedSaveFailure(XWikiException e, XWikiContext xcontext,
+        DocumentReference ref, Locale locale, boolean creating, String existsMessage, Logger logger)
+    {
+        if (!isStorageSaveError(e)) {
+            return null;
+        }
+        if (creating && existsFresh(ref, locale, xcontext, logger)) {
+            logger.warn("MCP write tool lost a create race on [{}], rerouting to the read-first result: [{}]",
+                ref, ExceptionUtils.getRootCauseMessage(e));
+            logger.debug("MCP write tool create-race details", e);
+            return MCPToolSupport.errorResult(existsMessage);
+        }
+        if (isConcurrencyCollision(e)) {
+            logger.warn("MCP write tool save collided with a concurrent write on [{}]: [{}]",
+                ref, ExceptionUtils.getRootCauseMessage(e));
+            logger.debug("MCP write tool save-collision details", e);
+            return MCPToolSupport.errorResult(CONCURRENT_SAVE_MESSAGE);
+        }
+        return null;
     }
 
     /**

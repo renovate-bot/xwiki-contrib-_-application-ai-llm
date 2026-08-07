@@ -369,9 +369,18 @@ public class MCPWriteObjectTool implements MCPTool
             if (titleChanged) {
                 apiDoc.setTitle(request.title());
             }
-            apiDoc.save(
-                MCPWriteSupport.buildComment(request.comment(), creating, changeSummary(applied, localClassName)),
-                MCPWriteSupport.isMinorEdit(creating, request.major()));
+            try {
+                apiDoc.save(MCPWriteSupport.buildComment(request.comment(), creating,
+                    changeSummary(applied, localClassName)),
+                    MCPWriteSupport.isMinorEdit(creating, request.major()));
+            } catch (XWikiException e) {
+                McpSchema.CallToolResult rerouted = MCPWriteSupport.reroutedSaveFailure(e, xcontext, ref,
+                    null, creating, alreadyExistsMessage(request.reference()), this.logger);
+                if (rerouted != null) {
+                    return rerouted;
+                }
+                throw e;
+            }
 
             String statusLines = joinStatusLines(
                 MCPWriteSupport.titleLine(creating, titleChanged, request.title()),
@@ -407,10 +416,7 @@ public class MCPWriteObjectTool implements MCPTool
             return null;
         }
         if (baseVersion == null) {
-            return MCPToolSupport.errorResult("Document " + QUOTE + MCPTextGuards.fragment(reference)
-                + QUOTE + " already exists. "
-                + "First read it with get_document and pass the base_version it shows, so the object "
-                + "change is based on a recent read.");
+            return MCPToolSupport.errorResult(alreadyExistsMessage(reference));
         }
         if (!baseVersion.equals(currentVersion)) {
             return MCPToolSupport.errorResult(
@@ -418,6 +424,21 @@ public class MCPWriteObjectTool implements MCPTool
                     baseVersion, "retry."));
         }
         return null;
+    }
+
+    /**
+     * Formats the read-first refusal for an update sent without {@code base_version}. Also the
+     * re-routed result of a creating save that lost a create race (the document provably exists by the
+     * time the failure is handled), so the two paths can never drift apart in wording.
+     *
+     * @param reference the original reference string, echoed neutralized in the message
+     * @return the agent-facing error message
+     */
+    private static String alreadyExistsMessage(String reference)
+    {
+        return "Document " + QUOTE + MCPTextGuards.fragment(reference) + QUOTE + " already exists. "
+            + "First read it with get_document and pass the base_version it shows, so the object "
+            + "change is based on a recent read.";
     }
 
     /**

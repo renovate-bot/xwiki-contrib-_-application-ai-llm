@@ -27,11 +27,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.xwiki.contrib.llm.mcp.MCPAccessDeniedException;
 import org.xwiki.contrib.llm.mcp.MCPTool;
 import org.xwiki.model.reference.DocumentReference;
 import org.xwiki.rendering.syntax.Syntax;
 import org.xwiki.security.authorization.Right;
+import org.xwiki.test.LogLevel;
+import org.xwiki.test.junit5.LogCaptureExtension;
 import org.xwiki.test.junit5.mockito.InjectMockComponents;
 
 import com.xpn.xwiki.doc.XWikiDocument;
@@ -98,6 +101,9 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
 
     private static final String DEFAULT_BODY = "default body";
 
+    @RegisterExtension
+    private LogCaptureExtension logCapture = new LogCaptureExtension(LogLevel.WARN);
+
     @InjectMockComponents
     private MCPEditDocumentTool tool;
 
@@ -139,6 +145,39 @@ class MCPEditDocumentToolTest extends AbstractMCPWriteToolTest
     private static Map<String, Object> edit(String oldString, String newString)
     {
         return Map.of(OLD_STRING, oldString, NEW_STRING, newString);
+    }
+
+    @Test
+    void createRaceReroutesToTheJustCreatedMessage(MockitoOldcore oldcore) throws Exception
+    {
+        // The winner's row is committed by the time the loser handles its failure, so the fresh
+        // re-check sees the document existing and the creating edit is steered to the read-then-edit
+        // loop instead of the generic failure message.
+        loseRaceOnSave(oldcore, createRaceException());
+
+        McpSchema.CallToolResult result =
+            call(Map.of(REFERENCE_KEY, REF, EDITS_KEY, List.of(edit("", "new body"))));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("The document was just created by another write. Read it with get_document and retry "
+            + "the edit against the current content.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("lost a create race"), this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void concurrentCollisionOnEditReturnsTheRetryMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, DEFAULT_BODY, null);
+        failSave(oldcore, serializationCollisionException());
+
+        McpSchema.CallToolResult result =
+            call(Map.of(REFERENCE_KEY, REF, EDITS_KEY, List.of(edit("default", "changed"))));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Could not save the document: the save collided with another write happening at the "
+            + "same time. Retry the call; sending writes one at a time avoids this.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("collided with a concurrent write"),
+            this.logCapture.getMessage(0));
     }
 
     @Test

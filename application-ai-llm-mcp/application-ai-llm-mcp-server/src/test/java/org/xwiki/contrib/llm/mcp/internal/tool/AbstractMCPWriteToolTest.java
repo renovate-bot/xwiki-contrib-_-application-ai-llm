@@ -19,6 +19,8 @@
  */
 package org.xwiki.contrib.llm.mcp.internal.tool;
 
+import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.Locale;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -32,12 +34,15 @@ import org.xwiki.model.reference.EntityReference;
 import org.xwiki.model.reference.EntityReferenceSerializer;
 import org.xwiki.test.junit5.mockito.MockComponent;
 
+import com.xpn.xwiki.XWikiException;
 import com.xpn.xwiki.doc.XWikiDocument;
 import com.xpn.xwiki.test.MockitoOldcore;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -211,6 +216,90 @@ public abstract class AbstractMCPWriteToolTest extends AbstractMCPToolTest
     protected static void verifyNothingSaved(MockitoOldcore oldcore) throws Exception
     {
         verify(oldcore.getSpyXWiki(), never())
+            .saveDocument(any(XWikiDocument.class), anyString(), anyBoolean(), any());
+    }
+
+    /**
+     * Builds the storage-level save failure the platform throws when a document save fails, carrying
+     * the given cause chain.
+     *
+     * @param cause the cause chain under the wrapped save failure
+     * @return the wrapped save failure
+     */
+    protected static XWikiException storageSaveException(Throwable cause)
+    {
+        return new XWikiException(XWikiException.MODULE_XWIKI_STORE,
+            XWikiException.ERROR_XWIKI_STORE_HIBERNATE_SAVING_DOC, "Exception while saving document {0}",
+            cause, new Object[] {"the document"});
+    }
+
+    /**
+     * Builds the save failure of a lost same-document create race: a duplicate INSERT rejected by the
+     * database's unique constraint (SQLSTATE 23505), below an intermediate wrapper.
+     *
+     * @return the wrapped save failure
+     */
+    protected static XWikiException createRaceException()
+    {
+        return storageSaveException(new RuntimeException(new SQLIntegrityConstraintViolationException(
+            "integrity constraint violation: unique constraint or index violation", "23505", 0)));
+    }
+
+    /**
+     * Builds the save failure of two concurrent transactions colliding (SQLSTATE 40001, a
+     * serialization failure), below an intermediate wrapper.
+     *
+     * @return the wrapped save failure
+     */
+    protected static XWikiException serializationCollisionException()
+    {
+        return storageSaveException(new RuntimeException(
+            new SQLException("transaction serialization failure", "40001")));
+    }
+
+    /**
+     * Builds a storage-level save failure whose cause chain carries no {@link SQLException} at all, so
+     * no concurrency re-route applies.
+     *
+     * @return the wrapped save failure
+     */
+    protected static XWikiException opaqueSaveException()
+    {
+        return storageSaveException(new RuntimeException("connection reset"));
+    }
+
+    /**
+     * Makes every document save throw the given failure without persisting anything.
+     *
+     * @param oldcore the oldcore fixture
+     * @param failure the failure the save throws
+     * @throws Exception on fixture failure
+     */
+    protected static void failSave(MockitoOldcore oldcore, XWikiException failure) throws Exception
+    {
+        doThrow(failure).when(oldcore.getSpyXWiki())
+            .saveDocument(any(XWikiDocument.class), anyString(), anyBoolean(), any());
+    }
+
+    /**
+     * Makes every document save commit a copy of the saved row into the store fixture and STILL throw
+     * the given failure - the observable outcome of losing a save race: the competing write's row is
+     * committed by the time the loser handles its failure, so a fresh re-load sees the document
+     * existing. The copy goes straight into the fixture's document map (the same map the fixture's own
+     * save answer fills), because this stub replaces that answer.
+     *
+     * @param oldcore the oldcore fixture
+     * @param failure the failure the save throws
+     * @throws Exception on fixture failure
+     */
+    protected static void loseRaceOnSave(MockitoOldcore oldcore, XWikiException failure) throws Exception
+    {
+        doAnswer(invocation -> {
+            XWikiDocument winner = invocation.<XWikiDocument>getArgument(0).clone();
+            winner.setNew(false);
+            oldcore.getDocuments().put(winner.getDocumentReferenceWithLocale(), winner);
+            throw failure;
+        }).when(oldcore.getSpyXWiki())
             .saveDocument(any(XWikiDocument.class), anyString(), anyBoolean(), any());
     }
 }

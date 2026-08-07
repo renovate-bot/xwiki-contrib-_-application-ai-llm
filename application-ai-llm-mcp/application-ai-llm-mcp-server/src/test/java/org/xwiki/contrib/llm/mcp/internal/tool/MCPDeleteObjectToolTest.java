@@ -367,6 +367,45 @@ class MCPDeleteObjectToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void concurrentCollisionOnRemovalReturnsTheRetryMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocumentWithTwoObjects(oldcore);
+        String versionBefore = currentVersion(oldcore);
+        failSave(oldcore, serializationCollisionException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, BASE_VERSION_KEY, versionBefore));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Could not save the document: the save collided with another write happening at the "
+            + "same time. Retry the call; sending writes one at a time avoids this.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("collided with a concurrent write"),
+            this.logCapture.getMessage(0));
+        // The removal happened on the api wrapper's clone, so the stored object survives the failure.
+        assertNotNull(loadDocument(oldcore).getXObject(CLASS_REFERENCE, 0));
+    }
+
+    @Test
+    void storageFailureWithoutSqlStateKeepsTheGenericMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocumentWithTwoObjects(oldcore);
+        String versionBefore = currentVersion(oldcore);
+        failSave(oldcore, opaqueSaveException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            OBJECT_KEY, 0, BASE_VERSION_KEY, versionBefore));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        // A save failure that matches the storage save error but carries no SQL state is NOT a
+        // recognized collision: the generic fixed message is preserved verbatim.
+        assertEquals("Could not save the document. Try again; if it persists, report it to a wiki "
+            + "administrator (details are in the server logs).", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("MCP delete_object tool failed"),
+            this.logCapture.getMessage(0));
+        assertTrue(this.logCapture.getMessage(0).contains("connection reset"), this.logCapture.getMessage(0));
+    }
+
+    @Test
     void toolDefinitionRequiresReferenceClassObjectAndBaseVersion()
     {
         McpSchema.Tool definition = this.tool.getToolDefinition();

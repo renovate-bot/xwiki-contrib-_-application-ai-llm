@@ -41,6 +41,7 @@ import org.xwiki.model.reference.EntityReferenceSerializer;
 import com.xpn.xwiki.XWikiContext;
 import com.xpn.xwiki.XWikiException;
 import com.xpn.xwiki.api.Document;
+import com.xpn.xwiki.doc.XWikiDocument;
 
 import io.modelcontextprotocol.spec.McpSchema;
 
@@ -274,28 +275,61 @@ public class MCPDeleteObjectTool implements MCPTool
                     "retry the removal if you still intend it."));
             }
 
-            String localClassName = this.localSerializer.serialize(classRef);
-            // Guard read-only against the cached xdoc BEFORE mutating (negative number, no-object-at-number
-            // listing existing numbers). The api wrapper clones internally on first mutation, so the cache
-            // instance is never mutated in place - do not pre-clone or mutate xdoc here.
-            MCPObjectWriteSupport.requireObjectExists(xdoc, classRef, localClassName, objectNumber);
-            Document apiDoc = new Document(xdoc, xcontext);
-            // Resolve the object by the already-authorized class reference (not a re-resolved name) so the
-            // lookup matches requireObjectExists. requireObjectExists validated presence on xdoc, so a null
-            // here would mean the wrapper's internal clone diverged; guard it defensively because execute()
-            // catches only IllegalArgumentException and XWikiException, not a stray NullPointerException.
-            com.xpn.xwiki.api.Object apiObject = apiDoc.getObject(classRef, objectNumber);
-            if (apiObject == null) {
-                return MCPToolSupport.errorResult(
-                    MCPObjectWriteSupport.noObjectMessage(xdoc, classRef, localClassName, objectNumber));
-            }
-            apiDoc.removeObject(apiObject);
-            apiDoc.save(MCPWriteSupport.buildComment(comment, false,
-                "deleted " + localClassName + OBJECT_INFIX + objectNumber), MCPWriteSupport.isMinorEdit(false, false));
-
-            return MCPToolSupport.result(
-                buildSuccessResult(ref, localClassName, objectNumber, oldVersion, apiDoc.getVersion()));
+            return removeObjectAndSave(xcontext, xdoc, ref, classRef, objectNumber, comment, oldVersion);
         });
+    }
+
+    /**
+     * Removes the object from the loaded document and saves the removal, the tail of the guarded
+     * removal once every refusal has passed.
+     *
+     * @param xcontext the XWiki context, switched to the target wiki
+     * @param xdoc the loaded target document
+     * @param ref the resolved and authorized document reference
+     * @param classRef the resolved and authorized class reference
+     * @param objectNumber the number of the object to remove
+     * @param comment the agent-supplied version comment, or {@code null}
+     * @param oldVersion the document's version before the save
+     * @return the tool result
+     * @throws XWikiException when saving fails and the failure is not re-routable
+     */
+    private McpSchema.CallToolResult removeObjectAndSave(XWikiContext xcontext, XWikiDocument xdoc,
+        DocumentReference ref, DocumentReference classRef, int objectNumber, String comment, String oldVersion)
+        throws XWikiException
+    {
+        String localClassName = this.localSerializer.serialize(classRef);
+        // Guard read-only against the cached xdoc BEFORE mutating (negative number, no-object-at-number
+        // listing existing numbers). The api wrapper clones internally on first mutation, so the cache
+        // instance is never mutated in place - do not pre-clone or mutate xdoc here.
+        MCPObjectWriteSupport.requireObjectExists(xdoc, classRef, localClassName, objectNumber);
+        Document apiDoc = new Document(xdoc, xcontext);
+        // Resolve the object by the already-authorized class reference (not a re-resolved name) so the
+        // lookup matches requireObjectExists. requireObjectExists validated presence on xdoc, so a null
+        // here would mean the wrapper's internal clone diverged; guard it defensively because execute()
+        // catches only IllegalArgumentException and XWikiException, not a stray NullPointerException.
+        com.xpn.xwiki.api.Object apiObject = apiDoc.getObject(classRef, objectNumber);
+        if (apiObject == null) {
+            return MCPToolSupport.errorResult(
+                MCPObjectWriteSupport.noObjectMessage(xdoc, classRef, localClassName, objectNumber));
+        }
+        apiDoc.removeObject(apiObject);
+        try {
+            apiDoc.save(MCPWriteSupport.buildComment(comment, false,
+                "deleted " + localClassName + OBJECT_INFIX + objectNumber),
+                MCPWriteSupport.isMinorEdit(false, false));
+        } catch (XWikiException e) {
+            // This tool never creates its document (creating = false), so the only possible
+            // re-route is the concurrency-collision message; there is no create race to detect.
+            McpSchema.CallToolResult rerouted =
+                MCPWriteSupport.reroutedSaveFailure(e, xcontext, ref, null, false, null, this.logger);
+            if (rerouted != null) {
+                return rerouted;
+            }
+            throw e;
+        }
+
+        return MCPToolSupport.result(
+            buildSuccessResult(ref, localClassName, objectNumber, oldVersion, apiDoc.getVersion()));
     }
 
     /**

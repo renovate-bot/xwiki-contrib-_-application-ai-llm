@@ -1012,6 +1012,42 @@ class MCPWriteObjectToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void createRaceReroutesToTheReadFirstMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        // The winner's row is committed by the time the loser handles its failure, so the fresh
+        // re-check sees the document existing and the loser gets the same read-first guidance the
+        // pre-save exists-guard produces.
+        loseRaceOnSave(oldcore, createRaceException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            FIELDS_KEY, Map.of(TITLE_FIELD, HELLO)));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Document \"Blog.MyPost\" already exists. First read it with get_document and pass "
+            + "the base_version it shows, so the object change is based on a recent read.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("lost a create race"), this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void concurrentCollisionOnUpdateReturnsTheRetryMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeClassDocument(oldcore);
+        storeDocument(oldcore);
+        String versionBefore = currentVersion(oldcore);
+        failSave(oldcore, serializationCollisionException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CLASS_KEY, CLASS_REF,
+            BASE_VERSION_KEY, versionBefore, FIELDS_KEY, Map.of(TITLE_FIELD, HELLO)));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Could not save the document: the save collided with another write happening at the "
+            + "same time. Retry the call; sending writes one at a time avoids this.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("collided with a concurrent write"),
+            this.logCapture.getMessage(0));
+    }
+
+    @Test
     void agentCommentIsPrefixedAndMajorFlagIsHonored(MockitoOldcore oldcore) throws Exception
     {
         storeClassDocument(oldcore);

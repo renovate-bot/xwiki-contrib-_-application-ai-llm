@@ -178,6 +178,15 @@ public class MCPEditDocumentTool implements MCPTool
             + "and retry.";
 
     /**
+     * The re-routed result of a creating edit (the empty-old-string branch) whose save lost a create
+     * race: the document provably exists by the time the failure is handled, so the agent is steered
+     * to the read-then-edit loop it would have been on had the winner saved a moment earlier. No
+     * version is echoed - the read round trip is the point.
+     */
+    private static final String JUST_CREATED_MESSAGE = "The document was just created by another write. Read "
+        + "it with get_document and retry the edit against the current content.";
+
+    /**
      * The two declared-scalar-parameter variants (see {@link MCPReachAwareParams}): the local variant drops
      * the cross-wiki sentence and the wiki-prefixed reference example from the {@code reference} description
      * so no cross-wiki capability is surfaced. The {@code edits} array parameter is hand-built in
@@ -422,7 +431,7 @@ public class MCPEditDocumentTool implements MCPTool
         boolean titleChanged = request.title() != null && !request.title().equals(xdoc.getTitle());
         boolean hiddenChanged = MCPWriteSupport.hiddenChanged(request.hidden(), xdoc);
 
-        if (!creating && newContent.equals(original) && !titleChanged && !hiddenChanged) {
+        if (MCPWriteSupport.isNoOpWrite(creating, newContent.equals(original), titleChanged, hiddenChanged)) {
             return MCPToolSupport.result("No changes: the edits produced content identical to "
                 + MCPWriteSupport.currentRowSubject(target.locale()) + ". Nothing was saved.");
         }
@@ -432,11 +441,20 @@ public class MCPEditDocumentTool implements MCPTool
         }
         Document apiDoc = prepareSave(MCPWriteSupport.editableWithHidden(xdoc, hiddenChanged, request.hidden()),
             xcontext, newContent, original, titleChanged, request.title());
-        apiDoc.save(
-            MCPWriteSupport.buildComment(request.comment(), creating,
-                editSummary(request.edits().size(), titleChanged, hiddenChanged,
-                    Boolean.TRUE.equals(request.hidden()))),
-            MCPWriteSupport.isMinorEdit(creating, request.major()));
+        try {
+            apiDoc.save(
+                MCPWriteSupport.buildComment(request.comment(), creating,
+                    editSummary(request.edits().size(), titleChanged, hiddenChanged,
+                        Boolean.TRUE.equals(request.hidden()))),
+                MCPWriteSupport.isMinorEdit(creating, request.major()));
+        } catch (XWikiException e) {
+            McpSchema.CallToolResult rerouted = MCPWriteSupport.reroutedSaveFailure(e, xcontext, ref,
+                target.locale(), creating, JUST_CREATED_MESSAGE, this.logger);
+            if (rerouted != null) {
+                return rerouted;
+            }
+            throw e;
+        }
 
         SaveOutcome outcome = new SaveOutcome(ref, target.locale(), creating,
             titleChanged, hiddenChanged, oldVersion, apiDoc.getVersion(), request.edits().size(), newContent,

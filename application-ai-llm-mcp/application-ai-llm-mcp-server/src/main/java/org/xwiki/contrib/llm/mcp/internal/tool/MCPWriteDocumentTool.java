@@ -325,8 +325,9 @@ public class MCPWriteDocumentTool implements MCPTool
 
         boolean titleChanged = request.title() != null && !request.title().equals(xdoc.getTitle());
         boolean hiddenChanged = MCPWriteSupport.hiddenChanged(request.hidden(), xdoc);
-        if (!creating && request.content().equals(MCPSourceText.normalizeLineEndings(xdoc.getContent()))
-            && !titleChanged && !hiddenChanged) {
+        if (MCPWriteSupport.isNoOpWrite(creating,
+            request.content().equals(MCPSourceText.normalizeLineEndings(xdoc.getContent())), titleChanged,
+            hiddenChanged)) {
             return MCPToolSupport.result(NO_CHANGES_PREFIX
                 + MCPWriteSupport.currentRowSubject(target.locale()) + ". Nothing was saved.");
         }
@@ -340,8 +341,18 @@ public class MCPWriteDocumentTool implements MCPTool
         if (titleChanged) {
             apiDoc.setTitle(request.title());
         }
-        apiDoc.save(MCPWriteSupport.buildComment(request.comment(), creating, REPLACED_CONTENT),
-            MCPWriteSupport.isMinorEdit(creating, request.major()));
+        try {
+            apiDoc.save(MCPWriteSupport.buildComment(request.comment(), creating, REPLACED_CONTENT),
+                MCPWriteSupport.isMinorEdit(creating, request.major()));
+        } catch (XWikiException e) {
+            McpSchema.CallToolResult rerouted = MCPWriteSupport.reroutedSaveFailure(e, xcontext, ref,
+                target.locale(), creating, alreadyExistsMessage(request.reference(), target.locale()),
+                this.logger);
+            if (rerouted != null) {
+                return rerouted;
+            }
+            throw e;
+        }
 
         return MCPToolSupport.result(buildSuccessResult(new Outcome(ref, target.locale(), creating,
             titleChanged, hiddenChanged, oldVersion, apiDoc.getVersion(), syntaxIdOf(xdoc)), request));
@@ -390,7 +401,9 @@ public class MCPWriteDocumentTool implements MCPTool
     /**
      * Formats the read-first refusal for an overwrite sent without {@code base_version}. The
      * translation variant names the row and tells the agent to read with the same locale, so the
-     * version it fetches is the row's own.
+     * version it fetches is the row's own. Also the re-routed result of a creating save that lost a
+     * create race (the row provably exists by the time the failure is handled), so the two paths can
+     * never drift apart in wording.
      *
      * @param reference the original reference string, echoed neutralized in the message
      * @param locale the written translation row's locale, or {@code null} for a default-language write

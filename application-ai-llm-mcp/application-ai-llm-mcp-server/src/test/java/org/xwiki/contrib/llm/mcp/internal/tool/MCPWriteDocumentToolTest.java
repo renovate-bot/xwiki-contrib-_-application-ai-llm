@@ -26,11 +26,14 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.xwiki.contrib.llm.mcp.MCPAccessDeniedException;
 import org.xwiki.contrib.llm.mcp.MCPTool;
 import org.xwiki.model.reference.DocumentReference;
 import org.xwiki.rendering.syntax.Syntax;
 import org.xwiki.security.authorization.Right;
+import org.xwiki.test.LogLevel;
+import org.xwiki.test.junit5.LogCaptureExtension;
 import org.xwiki.test.junit5.mockito.InjectMockComponents;
 
 import com.xpn.xwiki.XWikiContext;
@@ -102,6 +105,9 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
     private static final String FR_BODY = "corps";
 
     private static final String NEW_FR_BODY = "nouveau corps";
+
+    @RegisterExtension
+    private LogCaptureExtension logCapture = new LogCaptureExtension(LogLevel.WARN);
 
     @InjectMockComponents
     private MCPWriteDocumentTool tool;
@@ -971,6 +977,77 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
             .getDocument(new DocumentReference(DOC_REFERENCE, Locale.GERMAN), oldcore.getXWikiContext())
             .isNew());
         assertTrue(textOf(result).contains("Created document " + CANONICAL), textOf(result));
+    }
+
+    @Test
+    void createRaceReroutesToTheReadFirstMessage(MockitoOldcore oldcore) throws Exception
+    {
+        // The winner's row is committed by the time the loser handles its failure, so the fresh
+        // re-check sees the document existing and the loser gets the same read-first guidance the
+        // pre-save exists-guard produces.
+        loseRaceOnSave(oldcore, createRaceException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, NEW_BODY));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Document \"Sandbox.WebHome\" already exists. To overwrite it, first read it with "
+            + "get_document and pass the base_version it shows. For small changes prefer edit_document.",
+            textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("lost a create race"), this.logCapture.getMessage(0));
+        assertTrue(this.logCapture.getMessage(0).contains("constraint"), this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void translationCreateRaceReroutesToTheLocaleReadFirstMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, TITLE);
+        doReturn(true).when(oldcore.getSpyXWiki()).isMultiLingual(any());
+        loseRaceOnSave(oldcore, createRaceException());
+
+        McpSchema.CallToolResult result =
+            call(Map.of(REFERENCE_KEY, REF, LOCALE_KEY, "fr", CONTENT_KEY, FR_BODY));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        // The re-routed message is the locale variant of the guard: the raced row is the fr row, so
+        // the agent is steered to read with the SAME locale.
+        assertEquals("The fr translation of \"Sandbox.WebHome\" already exists. To overwrite it, first "
+            + "read it with get_document and locale=\"fr\", and pass the base_version it shows. For small "
+            + "changes prefer edit_document.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("lost a create race"), this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void concurrentCollisionOnOverwriteReturnsTheRetryMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeDocument(oldcore, OLD_BODY, TITLE);
+        String currentVersion = loadDocument(oldcore).getVersion();
+        failSave(oldcore, serializationCollisionException());
+
+        McpSchema.CallToolResult result =
+            call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, NEW_BODY, BASE_VERSION_KEY, currentVersion));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Could not save the document: the save collided with another write happening at the "
+            + "same time. Retry the call; sending writes one at a time avoids this.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("collided with a concurrent write"),
+            this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void storageFailureWithoutSqlStateKeepsTheGenericMessage(MockitoOldcore oldcore) throws Exception
+    {
+        // A storage save failure with no SQL state in the cause chain and no winner's row to point at:
+        // no re-route applies and the generic fixed message is preserved verbatim.
+        failSave(oldcore, opaqueSaveException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, CONTENT_KEY, NEW_BODY));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Could not save the document. Try again; if it persists, report it to a wiki "
+            + "administrator (details are in the server logs).", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("MCP write_document tool failed"),
+            this.logCapture.getMessage(0));
+        assertTrue(this.logCapture.getMessage(0).contains("connection reset"), this.logCapture.getMessage(0));
     }
 
     @Test

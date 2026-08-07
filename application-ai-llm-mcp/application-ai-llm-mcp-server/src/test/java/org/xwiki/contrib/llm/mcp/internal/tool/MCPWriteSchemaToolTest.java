@@ -781,6 +781,40 @@ class MCPWriteSchemaToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void createRaceReroutesToTheReadFirstMessage(MockitoOldcore oldcore) throws Exception
+    {
+        // The winner's row is committed by the time the loser handles its failure, so the fresh
+        // re-check sees the document existing and the creating add_field gets the same read-first
+        // guidance the pre-save exists-guard produces.
+        loseRaceOnSave(oldcore, createRaceException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, ADD_FIELD,
+            FIELD_KEY, TITLE_FIELD, TYPE_KEY, "String"));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Document \"MyApp.MyClass\" already exists. First read it with get_document and pass "
+            + "the base_version it shows.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("lost a create race"), this.logCapture.getMessage(0));
+    }
+
+    @Test
+    void concurrentCollisionOnAddFieldReturnsTheRetryMessage(MockitoOldcore oldcore) throws Exception
+    {
+        storeClass(oldcore);
+        String versionBefore = currentVersion(oldcore);
+        failSave(oldcore, serializationCollisionException());
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, OPERATION_KEY, ADD_FIELD,
+            FIELD_KEY, "done", TYPE_KEY, "Boolean", BASE_VERSION_KEY, versionBefore));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertEquals("Could not save the document: the save collided with another write happening at the "
+            + "same time. Retry the call; sending writes one at a time avoids this.", textOf(result));
+        assertTrue(this.logCapture.getMessage(0).contains("collided with a concurrent write"),
+            this.logCapture.getMessage(0));
+    }
+
+    @Test
     void catalogMetadataIsSet()
     {
         assertTrue(this.tool.isWrite());
