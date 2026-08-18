@@ -486,6 +486,9 @@ public class MCPGetDocumentTool implements MCPTool
                 base_version takes the DEFAULT row's Version). base_version
                 is per language row - pass the Version read with the SAME locale you write.
 
+                The Attachments header line lists the document's attachments; read one with
+                get_attachment.
+
             EXAMPLES
                 Full read:  reference="Help.GettingStarted"
                 A range:    reference="Help.GettingStarted", offset=80, limit=40
@@ -515,6 +518,7 @@ public class MCPGetDocumentTool implements MCPTool
                             stripping presentation; long attribute values are shortened).
 
             SEE ALSO
+                man get_attachment  Read one attachment listed by the Attachments header line.
                 man xwiki-syntax    XWiki 2.1 syntax reference (for the editable source you read and write).
                 man                 (no argument) List all tools and reference pages.
             """;
@@ -1079,7 +1083,7 @@ public class MCPGetDocumentTool implements MCPTool
         Syntax renderedSyntax, String extraLine, boolean fullDetail)
     {
         String header = buildHeader(buildReferenceBlock(doc), title, headerSyntaxId(doc, renderedSyntax),
-            doc.getVersion(), languageBlock(doc), sizeDescription);
+            doc.getVersion(), languageBlock(doc), attachmentsBlock(doc), sizeDescription);
         if (extraLine != null) {
             header += NEW_LINE + extraLine;
         }
@@ -1254,14 +1258,34 @@ public class MCPGetDocumentTool implements MCPTool
     }
 
     private String buildHeader(String referenceBlock, String title, String syntaxId, String version,
-        String languageBlock, String sizeDescription)
+        String languageBlock, String attachmentsBlock, String sizeDescription)
     {
         return referenceBlock
             + "Title: " + (StringUtils.isNotBlank(title) ? title : "(untitled)") + NEW_LINE
             + "Syntax: " + syntaxId + NEW_LINE
             + "Version: " + version + NEW_LINE
             + languageBlock
+            + attachmentsBlock
             + "Size: " + sizeDescription;
+    }
+
+    /**
+     * Builds the {@code Attachments:} discovery line naming the document's attachments with their sizes
+     * and mimetypes (see {@link MCPAttachmentSupport#attachmentsHeaderLine}), terminated by a newline so
+     * the caller can splice it in before the Size line. Empty when the document carries no attachments
+     * or the loaded instance does not expose them.
+     *
+     * @param doc the loaded document
+     * @return the attachments block, possibly empty
+     */
+    private String attachmentsBlock(DocumentModelBridge doc)
+    {
+        if (!(doc instanceof XWikiDocument xdoc)) {
+            return "";
+        }
+        String line =
+            MCPAttachmentSupport.attachmentsHeaderLine(xdoc.getAttachmentList(), this.contextProvider.get());
+        return line != null ? line + NEW_LINE : "";
     }
 
     /**

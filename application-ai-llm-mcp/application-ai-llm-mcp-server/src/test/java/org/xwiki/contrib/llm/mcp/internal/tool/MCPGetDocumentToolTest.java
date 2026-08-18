@@ -56,6 +56,7 @@ import org.xwiki.xml.html.DefaultHTMLCleanerComponentList;
 import com.xpn.xwiki.XWiki;
 import com.xpn.xwiki.XWikiContext;
 import com.xpn.xwiki.XWikiException;
+import com.xpn.xwiki.doc.XWikiAttachment;
 import com.xpn.xwiki.doc.XWikiDocument;
 import com.xpn.xwiki.objects.BaseObject;
 
@@ -2221,5 +2222,104 @@ class MCPGetDocumentToolTest extends AbstractMCPToolTest
         assertNotEquals(Boolean.TRUE, result.isError());
         verify(this.documentAccessBridge).getDocumentURL(REAL_REF, "view", "language=fr__%26", null,
             true);
+    }
+
+    /**
+     * Stubs one attachment of the {@code Attachments:} header line tests.
+     *
+     * @param filename the stored filename
+     * @param size the stored byte count
+     * @param mimeType the resolved mimetype
+     * @return the stubbed attachment
+     */
+    private XWikiAttachment attachment(String filename, long size, String mimeType)
+    {
+        XWikiAttachment attachment = mock(XWikiAttachment.class);
+        when(attachment.getFilename()).thenReturn(filename);
+        lenient().when(attachment.getLongSize()).thenReturn(size);
+        lenient().when(attachment.getMimeType(any(XWikiContext.class))).thenReturn(mimeType);
+        return attachment;
+    }
+
+    /**
+     * Stubs a store-loaded {@link XWikiDocument} carrying the given attachments, keyed to
+     * {@link #REAL_REF} on the bridge.
+     *
+     * @param attachments the document's attachments
+     * @return the stubbed document
+     */
+    private XWikiDocument stubDocWithAttachments(List<XWikiAttachment> attachments) throws Exception
+    {
+        when(this.documentAccess.resolveAndAuthorize(anyString(), eq(Right.VIEW))).thenReturn(REAL_REF);
+        XWikiDocument doc = stubLocalizedDoc(REAL_REF, Locale.ENGLISH, Locale.ENGLISH, List.of());
+        when(doc.getAttachmentList()).thenReturn(attachments);
+        return doc;
+    }
+
+    @Test
+    void headerOmitsAttachmentsLineWhenDocumentHasNone() throws Exception
+    {
+        stubDocWithAttachments(List.of());
+
+        String text = textOf(call(Map.of(REFERENCE_KEY, REF)));
+
+        assertFalse(text.contains("Attachments:"), text);
+    }
+
+    @Test
+    void headerListsAttachmentsWithSizesAndMimetypesBeforeSizeLine() throws Exception
+    {
+        stubDocWithAttachments(List.of(
+            attachment("report.pdf", 1234567, "application/pdf"),
+            attachment("logo.png", 24 * 1024, "image/png")));
+
+        String text = textOf(call(Map.of(REFERENCE_KEY, REF)));
+
+        // The line sits between the language block and the Size line, in every header shape (the block
+        // is spliced in by the shared header composition).
+        assertTrue(text.contains("Language: en\n"
+            + "Attachments: report.pdf (1.2 MB, application/pdf) · logo.png (24 KB, image/png)\n"
+            + "Size: "), text);
+    }
+
+    @Test
+    void headerAttachmentsLineCapsAtTenEntries() throws Exception
+    {
+        List<XWikiAttachment> attachments = new ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            attachments.add(attachment("file" + i + ".txt", 100, "text/plain"));
+        }
+        stubDocWithAttachments(attachments);
+
+        String text = textOf(call(Map.of(REFERENCE_KEY, REF)));
+
+        assertTrue(text.contains("file9.txt"), text);
+        assertFalse(text.contains("file10.txt"), text);
+        assertTrue(text.contains(" · +2 more\nSize: "), text);
+    }
+
+    @Test
+    void headerAttachmentsLineNeutralizesHostileFilenames() throws Exception
+    {
+        stubDocWithAttachments(List.of(attachment("evil\nname.txt", 100, "text/plain")));
+
+        String text = textOf(call(Map.of(REFERENCE_KEY, REF)));
+
+        // The smuggled newline cannot forge an extra header line: the name stays joined on the one line.
+        assertTrue(text.contains("Attachments: evilname.txt (100 bytes, text/plain)\nSize: "), text);
+        assertFalse(text.contains("evil\nname"), text);
+    }
+
+    @Test
+    void headerAttachmentsLineClampsHostileMimetypes() throws Exception
+    {
+        // The mimetype is attachment-stored (author-controllable) data: a multi-KB value is clamped to
+        // the fragment cap so it cannot dominate the header line.
+        stubDocWithAttachments(List.of(attachment("blob.bin", 100, "y".repeat(5000))));
+
+        String text = textOf(call(Map.of(REFERENCE_KEY, REF)));
+
+        assertTrue(text.contains("(100 bytes, " + "y".repeat(200) + "…)"), text);
+        assertFalse(text.contains("y".repeat(201)), text);
     }
 }
