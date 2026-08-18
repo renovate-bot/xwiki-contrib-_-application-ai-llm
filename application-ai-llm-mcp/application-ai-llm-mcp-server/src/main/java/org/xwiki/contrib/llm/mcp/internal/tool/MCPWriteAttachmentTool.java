@@ -489,9 +489,42 @@ public class MCPWriteAttachmentTool implements MCPTool
                 throw e;
             }
 
+            // The echoed attachment facts must come from the SAVED instance: on an overwrite the real
+            // store bumps the attachment version (updateContentArchive) on the api wrapper's INTERNAL
+            // clone - the instance actually saved - not on the staged one, so reading the staged
+            // instance after the save would echo the pre-bump version.
+            XWikiAttachment saved = savedAttachment(xcontext, ref, request.filename(), attachment);
+
             return MCPToolSupport.result(buildSuccessResult(ref, creating, updatingAttachment, oldVersion,
-                apiDoc.getVersion(), attachment, xcontext));
+                apiDoc.getVersion(), saved, xcontext));
         });
+    }
+
+    /**
+     * Re-reads the saved attachment for the result echo, so the echoed version, size, mimetype AND the
+     * download URL all come from the instance the store actually persisted (the document cache holds it
+     * after the save) and can never disagree with each other. Falls back to the staged instance rather
+     * than failing a successful save when the re-read misses.
+     *
+     * @param xcontext the XWiki context, still switched to the target wiki
+     * @param ref the saved document's reference
+     * @param filename the attachment filename
+     * @param staged the staged attachment instance, the fallback
+     * @return the saved attachment, or the staged one when the re-read misses
+     */
+    private XWikiAttachment savedAttachment(XWikiContext xcontext, DocumentReference ref, String filename,
+        XWikiAttachment staged)
+    {
+        try {
+            XWikiAttachment saved =
+                xcontext.getWiki().getDocument(ref, xcontext).getExactAttachment(filename);
+            if (saved != null) {
+                return saved;
+            }
+        } catch (XWikiException e) {
+            this.logger.debug("MCP write_attachment tool could not re-read the saved attachment", e);
+        }
+        return staged;
     }
 
     /**

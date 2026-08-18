@@ -290,6 +290,22 @@ class MCPWriteAttachmentToolTest extends AbstractMCPWriteToolTest
         call(Map.of(REFERENCE_KEY, REF, FILENAME_KEY, NOTES_TXT, CONTENT_KEY, TEXT,
             BASE_VERSION_KEY, firstVersion));
         String versionBefore = targetVersion(oldcore);
+        // Simulate the real store's archive bump (XWikiHibernateStore's updateContentArchive effect):
+        // the attachment version increments on the INSTANCE HANDED TO THE SAVE - the api wrapper's
+        // internal clone - never on the tool's staged copy. The bump is injected through
+        // checkSavingDocument, which the api wrapper calls with that exact instance right before the
+        // save (re-stubbing saveDocument itself would replace the oldcore fixture's storage
+        // emulation). This is what forces the echo to read post-save state; reading the staged
+        // instance would echo the pre-bump 1.1.
+        doAnswer(invocation -> {
+            XWikiAttachment beingSaved =
+                invocation.<XWikiDocument>getArgument(1).getExactAttachment(NOTES_TXT);
+            if (beingSaved != null) {
+                beingSaved.incrementVersion();
+            }
+            return null;
+        }).when(oldcore.getSpyXWiki()).checkSavingDocument(any(DocumentReference.class),
+            any(XWikiDocument.class), anyString(), anyBoolean(), any());
 
         McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, FILENAME_KEY, NOTES_TXT,
             CONTENT_KEY, "replaced text", BASE_VERSION_KEY, versionBefore));
@@ -300,7 +316,8 @@ class MCPWriteAttachmentToolTest extends AbstractMCPWriteToolTest
         assertNotEquals(versionBefore, saved.getVersion());
 
         String text = textOf(result);
-        assertTrue(text.contains("Updated attachment \"notes.txt\" (13 bytes, text/plain) to version "),
+        // The bumped version proves the echo reads the SAVED instance, not the staged one.
+        assertTrue(text.contains("Updated attachment \"notes.txt\" (13 bytes, text/plain) to version 1.2"),
             text);
         assertTrue(text.contains(" on document " + CANONICAL + " (previous revisions are kept in its "
             + "history)."), text);
