@@ -404,6 +404,22 @@ class MCPWriteAttachmentToolTest extends AbstractMCPWriteToolTest
     }
 
     @Test
+    void bidiFormattingFilenameRefused(MockitoOldcore oldcore) throws Exception
+    {
+        // A right-to-left override would make the stored bytes "report<RLO>fdp.exe" DISPLAY as a name
+        // ending .txt-like while actually ending .exe - refuse instead of storing the spoofable name.
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF,
+            FILENAME_KEY, "report\u202Efdp.exe", CONTENT_KEY, TEXT));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        String text = textOf(result);
+        assertTrue(text.contains("directional formatting characters"), text);
+        // The refusal echo itself is neutralized: the override never reaches the wire.
+        assertFalse(text.contains("\u202E"), "The override must be stripped from the echo");
+        verifyNothingSaved(oldcore);
+    }
+
+    @Test
     void overlongFilenameIsClampedInSuccessEcho(MockitoOldcore oldcore) throws Exception
     {
         // A very long (but legal) filename is cut with an ellipsis in the success echo.

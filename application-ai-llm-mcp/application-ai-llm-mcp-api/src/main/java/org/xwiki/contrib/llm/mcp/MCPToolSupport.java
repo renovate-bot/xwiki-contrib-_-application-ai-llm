@@ -103,13 +103,19 @@ public final class MCPToolSupport
     private static final String STRING_TYPE = "string";
 
     /**
-     * Matches the full newline/control family a single agent-facing line must never contain: every Unicode
-     * control character ({@code \p{Cc}}, covering CR, LF, TAB, VT, FF and NEL) plus the line separator
-     * ({@code \p{Zl}}, U+2028) and paragraph separator ({@code \p{Zp}}, U+2029). Java's {@code \p{Cc}} is C0/C1
-     * only and {@code \s} is ASCII-only, so both miss U+2028/U+2029; naming the categories explicitly closes
-     * that blind spot for every tool that renders untrusted page text into a line grammar.
+     * Matches everything a single agent-facing line must never contain. First the newline/control family:
+     * every Unicode control character ({@code \p{Cc}}, covering CR, LF, TAB, VT, FF and NEL) plus the line
+     * separator ({@code \p{Zl}}, U+2028) and paragraph separator ({@code \p{Zp}}, U+2029). Java's
+     * {@code \p{Cc}} is C0/C1 only and {@code \s} is ASCII-only, so both miss U+2028/U+2029; naming the
+     * categories explicitly closes that blind spot for every tool that renders untrusted page text into a
+     * line grammar. Second, the bidirectional formatting characters - the embeddings and overrides
+     * U+202A..U+202E, the isolates U+2066..U+2069 and the marks U+200E/U+200F: a stored name carrying an
+     * override can render its bytes reordered (a filename ending {@code .exe} displaying as {@code .txt}),
+     * spoofing a metadata line without breaking it. Deliberately NOT the whole {@code \p{Cf}} category:
+     * ZWJ (U+200D) and ZWNJ (U+200C) are legitimate in emoji and Indic/Persian text and must keep passing.
      */
-    private static final Pattern LINE_BREAK_CHARS = Pattern.compile("[\\p{Cc}\\p{Zl}\\p{Zp}]");
+    private static final Pattern LINE_BREAK_CHARS =
+        Pattern.compile("[\\p{Cc}\\p{Zl}\\p{Zp}\\u202A-\\u202E\\u2066-\\u2069\\u200E\\u200F]");
 
     /**
      * The declared parameters, in declaration order (preserved so the advertised schema lists
@@ -267,10 +273,11 @@ public final class MCPToolSupport
     }
 
     /**
-     * Removes every newline/control-family character (see {@link #LINE_BREAK_CHARS}) from a string, so
-     * untrusted page text cannot inject a line break into a single-line agent-facing rendering (forging a fake
-     * row, banner or reference). Only the break characters are removed; all other characters, including
-     * reference-syntax punctuation, are left intact so a value stays usable as-is.
+     * Removes every newline/control-family character and bidirectional formatting character (see
+     * {@link #LINE_BREAK_CHARS}) from a string, so untrusted page text can neither inject a line break into
+     * a single-line agent-facing rendering (forging a fake row, banner or reference) nor reorder how the
+     * line displays (spoofing e.g. a file extension). Only those characters are removed; all other
+     * characters, including reference-syntax punctuation, are left intact so a value stays usable as-is.
      *
      * @param value the raw value, possibly {@code null}
      * @return the value with all newline/control-family characters removed, or {@code null} when {@code value}

@@ -2311,6 +2311,19 @@ class MCPGetDocumentToolTest extends AbstractMCPToolTest
     }
 
     @Test
+    void headerAttachmentsLineStripsBidiFormattingFromFilenames() throws Exception
+    {
+        // A right-to-left override in a stored filename could make the header line DISPLAY a spoofed
+        // extension; the fragment guard strips the bidi formatting characters before the echo.
+        stubDocWithAttachments(List.of(attachment("safe\u202Egnp.exe", 100, "text/plain")));
+
+        String text = textOf(call(Map.of(REFERENCE_KEY, REF)));
+
+        assertTrue(text.contains("Attachments: safegnp.exe (100 bytes, text/plain)\nSize: "), text);
+        assertFalse(text.contains("\u202E"), text);
+    }
+
+    @Test
     void headerAttachmentsLineClampsHostileMimetypes() throws Exception
     {
         // The mimetype is attachment-stored (author-controllable) data: a multi-KB value is clamped to

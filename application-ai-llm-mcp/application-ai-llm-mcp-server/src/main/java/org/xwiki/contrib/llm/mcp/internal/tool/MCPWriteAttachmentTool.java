@@ -269,9 +269,10 @@ public class MCPWriteAttachmentTool implements MCPTool
                                      filename="notes.txt", content="updated text"
 
             SEE ALSO
-                man get_attachment    Read an attachment's content or metadata (and its version).
-                man get_document      Lists a document's attachments and shows the base_version.
-                man                   (no argument) List all tools and reference pages.
+                man get_attachment      Read an attachment's content or metadata (and its version).
+                man get_document        Lists a document's attachments and shows the base_version.
+                man delete_attachment   Delete an attachment (moves it to the attachment recycle bin).
+                man                     (no argument) List all tools and reference pages.
             """;
     }
 
@@ -343,9 +344,11 @@ public class MCPWriteAttachmentTool implements MCPTool
 
     /**
      * Refuses a filename carrying a path or parameter separator (following the platform upload action's
-     * rule) or any ISO control character (which could forge lines in listings and echoes). The
-     * platform's own attach call would silently strip a path prefix at the FIRST separator only, which
-     * is surprising enough that an explicit refusal teaches better than sanitizing.
+     * rule), any ISO control character (which could forge lines in listings and echoes), or any Unicode
+     * bidirectional formatting character (which could reorder how the stored name DISPLAYS - a name
+     * whose bytes end {@code .exe} rendering as {@code .txt}). The platform's own attach call would
+     * silently strip a path prefix at the FIRST separator only, which is surprising enough that an
+     * explicit refusal teaches better than sanitizing.
      *
      * @param filename the requested filename
      * @throws IllegalArgumentException with the agent-facing message when the filename is invalid
@@ -354,11 +357,33 @@ public class MCPWriteAttachmentTool implements MCPTool
     {
         boolean separator =
             filename.indexOf('/') >= 0 || filename.indexOf('\\') >= 0 || filename.indexOf(';') >= 0;
-        if (separator || filename.chars().anyMatch(Character::isISOControl)) {
+        if (separator
+            || filename.chars().anyMatch(c -> Character.isISOControl(c) || isBidiFormatting(c))) {
             throw new IllegalArgumentException(MCPToolSupport.ERROR_PREFIX + FILENAME_PARAM
-                + "' must not contain \"/\", \"\\\", \";\" or control characters: " + QUOTE
-                + MCPTextGuards.fragment(filename) + QUOTE + PERIOD + NOTHING_SAVED);
+                + "' must not contain \"/\", \"\\\", \";\", control characters or directional "
+                + "formatting characters: " + QUOTE + MCPTextGuards.fragment(filename) + QUOTE + PERIOD
+                + NOTHING_SAVED);
         }
+    }
+
+    /**
+     * Tests for the bidirectional formatting characters refused in filenames: the embeddings and
+     * overrides U+202A..U+202E, the isolates U+2066..U+2069 and the marks U+200E/U+200F. Deliberately
+     * NOT the whole format category: ZWJ (U+200D) and ZWNJ (U+200C) are legitimate in emoji and
+     * Indic/Persian filenames and keep passing.
+     *
+     * @param codePoint the code point to test
+     * @return whether the code point is a bidirectional formatting character
+     */
+    private static boolean isBidiFormatting(int codePoint)
+    {
+        if (codePoint >= 0x202A && codePoint <= 0x202E) {
+            return true;
+        }
+        if (codePoint >= 0x2066 && codePoint <= 0x2069) {
+            return true;
+        }
+        return codePoint == 0x200E || codePoint == 0x200F;
     }
 
     /**

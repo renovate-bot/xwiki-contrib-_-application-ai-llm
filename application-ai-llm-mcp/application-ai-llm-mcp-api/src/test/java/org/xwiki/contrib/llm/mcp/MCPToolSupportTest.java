@@ -441,6 +441,17 @@ class MCPToolSupportTest
     }
 
     @Test
+    void stripLineBreaksRemovesBidiFormattingButKeepsJoiners()
+    {
+        // The bidirectional embeddings/overrides, isolates and marks can reorder how a line DISPLAYS
+        // (a stored name whose bytes end .exe rendering as .txt), so they are removed like line breaks.
+        assertEquals("attack.exe",
+            MCPToolSupport.stripLineBreaks("a\u202Att\u202Eack\u2066.e\u2069x\u200Ee\u200F"));
+        // ZWJ and ZWNJ are legitimate in emoji and Indic/Persian text and must keep passing.
+        assertEquals("a\u200Db\u200Cc", MCPToolSupport.stripLineBreaks("a\u200Db\u200Cc"));
+    }
+
+    @Test
     void parseLocaleAcceptsValidLocaleForms()
     {
         assertEquals(Locale.FRENCH, MCPToolSupport.parseLocale("fr", LOCALE_KEY));
