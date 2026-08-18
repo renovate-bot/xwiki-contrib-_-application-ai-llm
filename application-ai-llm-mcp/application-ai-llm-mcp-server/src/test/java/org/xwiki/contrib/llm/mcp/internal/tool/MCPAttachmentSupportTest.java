@@ -86,12 +86,58 @@ class MCPAttachmentSupportTest
         assertTrue(MCPAttachmentSupport.isTextMimeType("application/x-sh"));
         assertTrue(MCPAttachmentSupport.isTextMimeType("application/ld+json"));
         assertTrue(MCPAttachmentSupport.isTextMimeType("application/xhtml+xml"));
+        // SVG is XML text an agent can read and edit; it is deliberately NOT routed as a vision image.
+        assertTrue(MCPAttachmentSupport.isTextMimeType("image/svg+xml"));
+        // RTF's text/* form is a control-word format that reads terribly raw: routed to extraction.
+        assertFalse(MCPAttachmentSupport.isTextMimeType("text/rtf"));
         assertFalse(MCPAttachmentSupport.isTextMimeType("application/pdf"));
         assertFalse(MCPAttachmentSupport.isTextMimeType("application/zip"));
         assertFalse(MCPAttachmentSupport.isTextMimeType("image/png"));
-        assertFalse(MCPAttachmentSupport.isTextMimeType("image/svg+xml"));
         assertFalse(MCPAttachmentSupport.isTextMimeType(null));
         assertFalse(MCPAttachmentSupport.isTextMimeType(" "));
+    }
+
+    @Test
+    void isExtractableMimeTypeMatrix()
+    {
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/pdf"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("APPLICATION/PDF"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/rtf"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("text/rtf"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/msword"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/vnd.ms-excel"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/vnd.ms-powerpoint"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/vnd.oasis.opendocument.text"));
+        assertTrue(MCPAttachmentSupport.isExtractableMimeType("application/vnd.oasis.opendocument.presentation"));
+        assertFalse(MCPAttachmentSupport.isExtractableMimeType("application/zip"));
+        assertFalse(MCPAttachmentSupport.isExtractableMimeType("text/plain"));
+        assertFalse(MCPAttachmentSupport.isExtractableMimeType("image/png"));
+        assertFalse(MCPAttachmentSupport.isExtractableMimeType(null));
+        assertFalse(MCPAttachmentSupport.isExtractableMimeType(" "));
+    }
+
+    @Test
+    void isInlineableImageMimeTypeMatrix()
+    {
+        assertTrue(MCPAttachmentSupport.isInlineableImageMimeType("image/png"));
+        assertTrue(MCPAttachmentSupport.isInlineableImageMimeType("IMAGE/PNG"));
+        assertTrue(MCPAttachmentSupport.isInlineableImageMimeType("image/jpeg"));
+        assertTrue(MCPAttachmentSupport.isInlineableImageMimeType("image/gif"));
+        assertTrue(MCPAttachmentSupport.isInlineableImageMimeType("image/webp"));
+        assertFalse(MCPAttachmentSupport.isInlineableImageMimeType("image/tiff"));
+        assertFalse(MCPAttachmentSupport.isInlineableImageMimeType("image/bmp"));
+        assertFalse(MCPAttachmentSupport.isInlineableImageMimeType("image/svg+xml"));
+        assertFalse(MCPAttachmentSupport.isInlineableImageMimeType("application/pdf"));
+        assertFalse(MCPAttachmentSupport.isInlineableImageMimeType(null));
+        assertFalse(MCPAttachmentSupport.isInlineableImageMimeType(" "));
+        // The broader image predicate backs the image-specific refusal wording of non-inlineable types.
+        assertTrue(MCPAttachmentSupport.isImageMimeType("image/tiff"));
+        assertFalse(MCPAttachmentSupport.isImageMimeType("application/pdf"));
+        assertFalse(MCPAttachmentSupport.isImageMimeType(null));
     }
 
     @Test

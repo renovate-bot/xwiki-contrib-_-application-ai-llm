@@ -95,6 +95,15 @@
             <artifactId>xwiki-platform-search-solr-api</artifactId>
             <version>${platform.version}</version>
         </dependency>
+        <!-- TikaUtils (shared Tika instance + detection) and the Tika Metadata/TikaCoreProperties types:
+             PDF/office text extraction in get_attachment (MCPAttachmentSupport.extractText). The format
+             parsers ship in the XWiki WAR at runtime; this artifact carries the shared instance and
+             pulls tika-core for compilation. -->
+        <dependency>
+            <groupId>org.xwiki.platform</groupId>
+            <artifactId>xwiki-platform-tika-detect</artifactId>
+            <version>${platform.version}</version>
+        </dependency>
         <!-- Admin config reading: DocumentAccessBridge for XObject property access,
              document events for config-change-triggered server rebuilds,
              and DocumentModelBridge used in the event listener. -->

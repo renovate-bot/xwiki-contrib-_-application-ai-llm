@@ -21,10 +21,15 @@ package org.xwiki.contrib.llm.mcp.internal.tool;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.StringReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -32,19 +37,27 @@ import java.util.Set;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.tika.exception.TikaException;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.metadata.TikaCoreProperties;
 import org.xwiki.contrib.llm.mcp.MCPSourceText;
+import org.xwiki.tika.internal.TikaUtils;
 
 import com.xpn.xwiki.XWikiContext;
 import com.xpn.xwiki.XWikiException;
 import com.xpn.xwiki.doc.XWikiAttachment;
 
+import io.modelcontextprotocol.spec.McpSchema;
+
 /**
  * Shared attachment-path plumbing of the attachment-aware MCP tools ({@link MCPGetAttachmentTool} and the
- * {@code Attachments:} header line of {@link MCPGetDocumentTool}): the text-mimetype decision, human-readable
- * sizes, the fragment-guarded attachment listings and the budgeted line-oriented text-content read. Not a
- * component: a plain holder of static helpers, kept in this module so the oldcore types it handles
- * ({@link XWikiContext}, {@link XWikiAttachment}) stay out of the API module's surface, and so the
- * stream, charset and formatting dependencies it owns do not count against the composing tools' fan-out.
+ * {@code Attachments:} header line of {@link MCPGetDocumentTool}): the mimetype routing decisions (text,
+ * extractable document, inlineable image), human-readable sizes, the fragment-guarded attachment listings,
+ * the budgeted line-oriented text-content read, the Tika text extraction and the bounded image read with
+ * its mixed-content result assembly. Not a component: a plain holder of static helpers, kept in this
+ * module so the oldcore types it handles ({@link XWikiContext}, {@link XWikiAttachment}) stay out of the
+ * API module's surface, and so the stream, charset, Tika and formatting dependencies it owns do not count
+ * against the composing tools' fan-out.
  *
  * @version $Id$
  * @since 0.9.1
@@ -56,6 +69,14 @@ final class MCPAttachmentSupport
      * information over {@link #humanSize(long)}'s output (below one step the human form IS the byte count).
      */
     static final long ONE_KILOBYTE = 1024;
+
+    /**
+     * Cap on the bytes of an image inlined as MCP image content; a larger image degrades to the
+     * metadata header with its download URL. Enforced both on the declared size and while streaming
+     * (see {@link #readImageBytes(XWikiAttachment, XWikiContext)}), so a lying declared size cannot
+     * make the read unbounded.
+     */
+    static final int MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
     /**
      * Cap on the attachments named in one listing ({@link #attachmentsHeaderLine(List, XWikiContext)} and
@@ -121,6 +142,62 @@ final class MCPAttachmentSupport
     private static final String XML_SUFFIX = "+xml";
 
     /**
+     * The mimetype prefix of the image types.
+     */
+    private static final String IMAGE_PREFIX = "image/";
+
+    /**
+     * The SVG mimetype: XML text under an image top-level type. Routed as TEXT (an agent can read and
+     * edit the markup), never as an inlineable vision image - models do not accept SVG as image input.
+     */
+    private static final String SVG_MIMETYPE = IMAGE_PREFIX + "svg" + XML_SUFFIX;
+
+    /**
+     * The RTF subtype, registered under both the {@code text} and {@code application} top-level types.
+     */
+    private static final String RTF = "rtf";
+
+    /**
+     * The RTF mimetype in its {@code text/*} form: despite the top-level type, RTF is a control-word
+     * format that reads terribly raw, so it is routed to extraction like its {@code application/rtf}
+     * alias.
+     */
+    private static final String TEXT_RTF = TEXT_PREFIX + RTF;
+
+    /**
+     * The exact mimetypes routed to Tika text extraction: PDF, RTF (both its registered forms) and the
+     * legacy binary office formats. The OOXML and OpenDocument families match by prefix instead
+     * ({@link #OOXML_PREFIX}, {@link #OPENDOCUMENT_PREFIX}).
+     */
+    private static final Set<String> EXTRACTABLE_EXACT_TYPES = Set.of(
+        APPLICATION_PREFIX + "pdf",
+        APPLICATION_PREFIX + RTF,
+        TEXT_RTF,
+        APPLICATION_PREFIX + "msword",
+        APPLICATION_PREFIX + "vnd.ms-excel",
+        APPLICATION_PREFIX + "vnd.ms-powerpoint");
+
+    /**
+     * The mimetype prefix of the Office Open XML document family (docx, xlsx, pptx and their variants).
+     */
+    private static final String OOXML_PREFIX = APPLICATION_PREFIX + "vnd.openxmlformats-officedocument.";
+
+    /**
+     * The mimetype prefix of the OpenDocument family (odt, ods, odp and their variants).
+     */
+    private static final String OPENDOCUMENT_PREFIX = APPLICATION_PREFIX + "vnd.oasis.opendocument.";
+
+    /**
+     * The image mimetypes inlined as MCP image content: exactly the formats models accept as vision
+     * input.
+     */
+    private static final Set<String> INLINEABLE_IMAGE_TYPES = Set.of(
+        IMAGE_PREFIX + "png",
+        IMAGE_PREFIX + "jpeg",
+        IMAGE_PREFIX + "gif",
+        IMAGE_PREFIX + "webp");
+
+    /**
      * The date pattern of the header {@code Date:} lines.
      */
     private static final String DATE_PATTERN = "yyyy-MM-dd HH:mm";
@@ -147,24 +224,85 @@ final class MCPAttachmentSupport
 
     /**
      * Decides whether an attachment's mimetype designates text content that can be inlined into a tool
-     * response: any {@code text/*} type, the exact application types of
-     * {@link #TEXT_APPLICATION_TYPES}, and any {@code application/*+json} or {@code application/*+xml}
-     * structured-syntax form. Case-insensitive; a null or blank mimetype is not text.
+     * response: any {@code text/*} type except RTF (routed to extraction instead - see
+     * {@link #TEXT_RTF}), the exact application types of {@link #TEXT_APPLICATION_TYPES}, any
+     * {@code application/*+json} or {@code application/*+xml} structured-syntax form, and SVG (XML text
+     * under an image top-level type). Case-insensitive; a null or blank mimetype is not text.
      *
      * @param mimeType the attachment mimetype, possibly {@code null}
      * @return whether the mimetype designates inlineable text
      */
     static boolean isTextMimeType(String mimeType)
     {
-        if (StringUtils.isBlank(mimeType)) {
+        String normalized = normalizedMimeType(mimeType);
+        if (normalized == null) {
             return false;
         }
-        String normalized = mimeType.toLowerCase(Locale.ROOT);
-        if (normalized.startsWith(TEXT_PREFIX) || TEXT_APPLICATION_TYPES.contains(normalized)) {
+        if ((normalized.startsWith(TEXT_PREFIX) && !TEXT_RTF.equals(normalized))
+            || TEXT_APPLICATION_TYPES.contains(normalized) || SVG_MIMETYPE.equals(normalized)) {
             return true;
         }
         return normalized.startsWith(APPLICATION_PREFIX)
             && (normalized.endsWith(JSON_SUFFIX) || normalized.endsWith(XML_SUFFIX));
+    }
+
+    /**
+     * Decides whether an attachment's mimetype designates a document routed to Tika text extraction:
+     * PDF, RTF (both its {@code application/rtf} and {@code text/rtf} forms), the legacy binary office
+     * formats, and the OOXML and OpenDocument families. Case-insensitive; a null or blank mimetype is
+     * not extractable.
+     *
+     * @param mimeType the attachment mimetype, possibly {@code null}
+     * @return whether the mimetype designates an extractable document
+     */
+    static boolean isExtractableMimeType(String mimeType)
+    {
+        String normalized = normalizedMimeType(mimeType);
+        if (normalized == null) {
+            return false;
+        }
+        return EXTRACTABLE_EXACT_TYPES.contains(normalized)
+            || normalized.startsWith(OOXML_PREFIX) || normalized.startsWith(OPENDOCUMENT_PREFIX);
+    }
+
+    /**
+     * Decides whether an attachment's mimetype designates an image that is inlined as MCP image
+     * content: exactly the formats models accept as vision input ({@link #INLINEABLE_IMAGE_TYPES}).
+     * Case-insensitive; a null or blank mimetype is not inlineable.
+     *
+     * @param mimeType the attachment mimetype, possibly {@code null}
+     * @return whether the mimetype designates an inlineable image
+     */
+    static boolean isInlineableImageMimeType(String mimeType)
+    {
+        String normalized = normalizedMimeType(mimeType);
+        return normalized != null && INLINEABLE_IMAGE_TYPES.contains(normalized);
+    }
+
+    /**
+     * Decides whether an attachment's mimetype is an image type at all ({@code image/*}), so a
+     * non-inlineable image (TIFF, BMP) can be refused with image-specific wording instead of the
+     * generic pointer. Case-insensitive; a null or blank mimetype is not an image.
+     *
+     * @param mimeType the attachment mimetype, possibly {@code null}
+     * @return whether the mimetype is an image type
+     */
+    static boolean isImageMimeType(String mimeType)
+    {
+        String normalized = normalizedMimeType(mimeType);
+        return normalized != null && normalized.startsWith(IMAGE_PREFIX);
+    }
+
+    /**
+     * Shared normalization step of the mimetype predicates: lowercased for the case-insensitive
+     * comparisons, {@code null} for a blank value so every predicate answers {@code false} on it.
+     *
+     * @param mimeType the attachment mimetype, possibly {@code null}
+     * @return the lowercased mimetype, or {@code null} when blank
+     */
+    private static String normalizedMimeType(String mimeType)
+    {
+        return StringUtils.isBlank(mimeType) ? null : mimeType.toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -287,18 +425,152 @@ final class MCPAttachmentSupport
     static TextWindow readTextWindow(XWikiAttachment attachment, XWikiContext xcontext, int offset, int budget)
         throws XWikiException, IOException
     {
-        try (BufferedReader reader = new BufferedReader(
-            new InputStreamReader(attachment.getContentInputStream(xcontext), charsetOf(attachment)))) {
-            int skipped = 0;
-            while (skipped < offset) {
-                // Cap 0: drain the skipped line while storing nothing, so skipping stays heap-bounded too.
-                if (readBoundedLine(reader, 0) == null) {
-                    return TextWindow.beyondEnd(skipped);
-                }
-                skipped++;
-            }
-            return emitWindow(reader, offset, budget);
+        try (Reader source =
+            new InputStreamReader(attachment.getContentInputStream(xcontext), charsetOf(attachment))) {
+            return readTextWindow(source, offset, budget);
         }
+    }
+
+    /**
+     * Windows an already-extracted text the same way
+     * {@link #readTextWindow(XWikiAttachment, XWikiContext, int, int)} windows raw attachment content,
+     * so {@code offset} and the truncation notes behave identically on both paths.
+     *
+     * @param text the text to window
+     * @param offset the number of lines to skip
+     * @param budget the character budget of the emitted window
+     * @return the read outcome
+     * @throws IOException never in practice (a string source cannot fail mid-read), declared for the
+     *     shared line-reading plumbing
+     */
+    static TextWindow readTextWindow(String text, int offset, int budget) throws IOException
+    {
+        return readTextWindow(new StringReader(text), offset, budget);
+    }
+
+    /**
+     * The shared skip-then-emit core of the window reads, over any character source.
+     *
+     * @param source the character source; the caller owns its lifecycle
+     * @param offset the number of lines to skip
+     * @param budget the character budget of the emitted window
+     * @return the read outcome
+     * @throws IOException when reading the source fails
+     */
+    private static TextWindow readTextWindow(Reader source, int offset, int budget) throws IOException
+    {
+        BufferedReader reader = new BufferedReader(source);
+        int skipped = 0;
+        while (skipped < offset) {
+            // Cap 0: drain the skipped line while storing nothing, so skipping stays heap-bounded too.
+            if (readBoundedLine(reader, 0) == null) {
+                return TextWindow.beyondEnd(skipped);
+            }
+            skipped++;
+        }
+        return emitWindow(reader, offset, budget);
+    }
+
+    /**
+     * Extracts the plain text of a binary document attachment (PDF, office formats) through the
+     * platform's shared Tika instance, following the Solr indexer's extraction pattern: the filename is
+     * passed as the Tika resource name so type detection can use it. The returned string is bounded:
+     * the two-argument {@code parseToString} delegates to Tika's length-capped variant with the shared
+     * instance's maximum string length, so an arbitrarily large document cannot be materialized whole.
+     *
+     * @param attachment the attachment to extract from
+     * @param xcontext the XWiki context, for the content stream
+     * @return the extracted text, possibly blank when the document carries none
+     * @throws XWikiException when the content stream cannot be opened
+     * @throws IOException when reading the content fails
+     * @throws TikaException when the document cannot be parsed (encrypted, corrupt, no parser)
+     */
+    static String extractText(XWikiAttachment attachment, XWikiContext xcontext)
+        throws XWikiException, IOException, TikaException
+    {
+        Metadata metadata = new Metadata();
+        metadata.set(TikaCoreProperties.RESOURCE_NAME_KEY, attachment.getFilename());
+        try (InputStream in = attachment.getContentInputStream(xcontext)) {
+            return TikaUtils.parseToString(in, metadata);
+        }
+    }
+
+    /**
+     * The character cap the shared Tika instance applies to extracted text - the cap
+     * {@link #extractText} output is silently cut at, with no exception. An extraction whose length
+     * reaches it has almost certainly been cut, so the caller can say so instead of presenting a
+     * clean-looking final window of a document that in fact continues.
+     *
+     * @return the shared Tika instance's maximum string length, non-positive when unlimited
+     */
+    static int extractionCap()
+    {
+        return TikaUtils.getTika().getMaxStringLength();
+    }
+
+    /**
+     * Reads an image attachment's bytes bounded by {@link #MAX_IMAGE_BYTES}: at most one byte beyond
+     * the cap is ever buffered, and a stream that yields more than the cap (a declared size that lied)
+     * is abandoned rather than buffered further. The initial buffer is sized from the declared size
+     * when one is known, so a small trustworthy image does not allocate the whole cap; a stream that
+     * outgrows a small declared size grows once to the cap bound and is only abandoned past the CAP,
+     * never merely past the (untrusted) declared size.
+     *
+     * @param attachment the attachment to read
+     * @param xcontext the XWiki context, for the content stream
+     * @return the image bytes, or {@code null} when the stream exceeded the cap
+     * @throws XWikiException when the content stream cannot be opened
+     * @throws IOException when reading the content fails
+     */
+    static byte[] readImageBytes(XWikiAttachment attachment, XWikiContext xcontext)
+        throws XWikiException, IOException
+    {
+        long declaredSize = attachment.getLongSize();
+        int initialSize =
+            (int) Math.min(declaredSize >= 0 ? declaredSize : MAX_IMAGE_BYTES, MAX_IMAGE_BYTES) + 1;
+        try (InputStream in = attachment.getContentInputStream(xcontext)) {
+            byte[] buffer = new byte[initialSize];
+            int total = 0;
+            while (true) {
+                if (total == buffer.length) {
+                    if (buffer.length >= MAX_IMAGE_BYTES + 1) {
+                        return null;
+                    }
+                    buffer = Arrays.copyOf(buffer, MAX_IMAGE_BYTES + 1);
+                }
+                int read = in.read(buffer, total, buffer.length - total);
+                if (read == -1) {
+                    break;
+                }
+                total += read;
+            }
+            if (total > MAX_IMAGE_BYTES) {
+                return null;
+            }
+            return Arrays.copyOf(buffer, total);
+        }
+    }
+
+    /**
+     * Assembles the mixed-content result of an inlined image: the text block (metadata header and
+     * marker line) followed by the base64-encoded image block, which MCP clients render as a viewable
+     * image. Homed here so the SDK content-type assembly stays out of the composing tool's type
+     * surface. The mimetype is emitted lowercased - the callers only pass the inlineable set, whose
+     * canonical forms are lowercase.
+     *
+     * @param text the text block preceding the image
+     * @param imageBytes the raw image bytes
+     * @param mimeType the image mimetype
+     * @return the mixed text-and-image tool result
+     */
+    static McpSchema.CallToolResult imageResult(String text, byte[] imageBytes, String mimeType)
+    {
+        return McpSchema.CallToolResult.builder()
+            .addTextContent(text)
+            .addContent(McpSchema.ImageContent
+                .builder(Base64.getEncoder().encodeToString(imageBytes), mimeType.toLowerCase(Locale.ROOT))
+                .build())
+            .build();
     }
 
     /**

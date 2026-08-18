@@ -26,6 +26,7 @@ import javax.inject.Named;
 import javax.inject.Provider;
 import javax.inject.Singleton;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.xwiki.bridge.DocumentAccessBridge;
@@ -42,15 +43,18 @@ import org.xwiki.model.reference.EntityReferenceSerializer;
 import org.xwiki.security.authorization.Right;
 
 import com.xpn.xwiki.XWikiContext;
+import com.xpn.xwiki.XWikiException;
 import com.xpn.xwiki.doc.XWikiAttachment;
 import com.xpn.xwiki.doc.XWikiDocument;
 
 import io.modelcontextprotocol.spec.McpSchema;
 
 /**
- * MCP tool that reads one attachment of an XWiki document for an agent: text attachments are inlined
- * under the shared output budget with offset continuation, while every other type returns the metadata
- * header with a download URL instead of content.
+ * MCP tool that reads one attachment of an XWiki document for an agent: text attachments (SVG included)
+ * are inlined under the shared output budget with offset continuation, PDF and office documents return
+ * their Tika-extracted text windowed the same way, images up to the inline cap are returned as viewable
+ * MCP image content, and every other type returns the metadata header with a download URL instead of
+ * content.
  *
  * <p>The attachment is addressed by its EXACT stored filename (as listed by {@code get_document}'s
  * {@code Attachments:} header line); the platform's fuzzy filename fallback is deliberately not used, so
@@ -128,6 +132,59 @@ public class MCPGetAttachmentTool implements MCPTool
     private static final String NO_CONTENT_BODY = "Attachment has no content.";
 
     /**
+     * Shared tail of the degrade bodies pointing the agent at the header's Download URL.
+     */
+    private static final String DOWNLOAD_POINTER_TAIL = "; use the Download URL above.";
+
+    /**
+     * Body of a graceful extraction degrade: the document could not be parsed (encrypted, corrupt, no
+     * parser available). The root cause stays in the server logs.
+     */
+    private static final String EXTRACTION_FAILED_BODY = "Text extraction failed" + DOWNLOAD_POINTER_TAIL;
+
+    /**
+     * Body of an extraction that parsed fine but yielded no text (a scanned or image-only document).
+     */
+    private static final String NO_EXTRACTED_TEXT_BODY = "No text could be extracted" + DOWNLOAD_POINTER_TAIL;
+
+    /**
+     * The inline-cap phrase shared by the two over-cap image bodies, so their naming of the cap cannot
+     * drift apart.
+     */
+    private static final String INLINE_CAP_PHRASE = " the 2 MB inline cap";
+
+    /**
+     * Tail of the over-cap image body whose head names the declared size ({@code Image is 3.4 MB, ...}).
+     */
+    private static final String IMAGE_OVER_CAP_TAIL = ", above" + INLINE_CAP_PHRASE + DOWNLOAD_POINTER_TAIL;
+
+    /**
+     * Body of the over-cap degrade of an image whose declared size was small or unknown but whose
+     * stream yielded more than the cap: no trustworthy size can be named.
+     */
+    private static final String IMAGE_STREAM_OVER_CAP_BODY =
+        "Image is larger than" + INLINE_CAP_PHRASE + DOWNLOAD_POINTER_TAIL;
+
+    /**
+     * The text-block line announcing that the image content block follows it in the result.
+     */
+    private static final String IMAGE_MARKER_BODY = "Image content follows.";
+
+    /**
+     * Opens the note appended to the FINAL extraction window when the extractor's own character cap was
+     * reached: the extracted text ends there but the document continues, which the window itself cannot
+     * show (the cut is silent - see {@link MCPAttachmentSupport#extractionCap()}). Completed by the cap
+     * value and {@link #EXTRACTION_CAPPED_NOTE_SUFFIX}.
+     */
+    private static final String EXTRACTION_CAPPED_NOTE_PREFIX = "Extraction was capped at ~";
+
+    /**
+     * Closes the extraction-cap note opened by {@link #EXTRACTION_CAPPED_NOTE_PREFIX}.
+     */
+    private static final String EXTRACTION_CAPPED_NOTE_SUFFIX =
+        " chars; the document continues beyond this point - use the Download URL above for the full file.";
+
+    /**
      * The two declared-parameter variants (see {@link MCPReachAwareParams}): the local variant drops the
      * cross-wiki sentence and the wiki-prefixed reference example from the {@code reference} description
      * so no cross-wiki capability is surfaced.
@@ -180,10 +237,12 @@ public class MCPGetAttachmentTool implements MCPTool
     {
         return McpSchema.Tool.builder(TOOL_ID, PARAMS.advertised(this.wikiReach.isReachEnabled()).inputSchema())
             .description("Read an attachment from a document. Text attachments (text/*, JSON, XML, YAML, "
-                + "scripts) are returned inline under the ~" + MCPSourceText.MAX_OUTPUT_TOKENS + "-token "
-                + "output budget, with offset continuation for longer files; every other type returns the "
-                + "metadata header with a download URL instead of content. The filename must match exactly, "
-                + "as listed by get_document's Attachments header line.")
+                + "SVG, scripts) are returned inline under the ~" + MCPSourceText.MAX_OUTPUT_TOKENS + "-token "
+                + "output budget, with offset continuation for longer files; PDF and office documents "
+                + "return their extracted text (formatting not preserved); images up to 2 MB (PNG, JPEG, "
+                + "GIF, WebP) are returned as viewable image content; every other type returns the metadata "
+                + "header with a download URL instead of content. The filename must match exactly, as "
+                + "listed by get_document's Attachments header line.")
             .build();
     }
 
@@ -208,10 +267,21 @@ public class MCPGetAttachmentTool implements MCPTool
                 get_document read. There is no fuzzy matching - a near-miss is refused with the
                 names that do exist on the document.
 
-                Text attachments (text/*, JSON, XML, YAML, scripts) are inlined under the output
-                token budget; a longer file is cut at a line boundary with a continuation note -
-                pass its offset to read the next window. Every other type (images, PDFs, archives)
-                returns the metadata header with a Download URL instead of content.
+                Text attachments (text/*, JSON, XML, YAML, SVG, scripts) are inlined under the
+                output token budget; a longer file is cut at a line boundary with a continuation
+                note - pass its offset to read the next window.
+
+                PDF, RTF and office documents (Word, Excel, PowerPoint, OpenDocument) return
+                their text EXTRACTED by the wiki's document parser: formatting, layout and
+                embedded images are lost. The extracted text is windowed under the same budget
+                with the same offset continuation. An encrypted or unparseable document degrades
+                to the metadata header with its Download URL. Extraction itself is capped (about
+                100000 characters); a capped read's final window says the document continues -
+                the Download URL serves the full file.
+
+                Images up to 2 MB (PNG, JPEG, GIF, WebP) are returned as viewable image content
+                next to the metadata header. Larger images, other image formats and every other
+                type return the metadata header with a Download URL instead of content.
 
                 metadata=true is a cheap probe: the header and Download URL only, the content is
                 never read. The Document header line echoes the document version - use it as
@@ -219,7 +289,9 @@ public class MCPGetAttachmentTool implements MCPTool
 
             EXAMPLES
                 Read a text attachment:  reference="Sandbox.WebHome", filename="notes.txt"
-                Metadata only:  reference="Sandbox.WebHome", filename="report.pdf", metadata=true
+                Extract a PDF's text:    reference="Sandbox.WebHome", filename="report.pdf"
+                View an image:  reference="Sandbox.WebHome", filename="diagram.png"
+                Metadata only:  reference="Sandbox.WebHome", filename="archive.zip", metadata=true
                 Continuation:   reference="Sandbox.WebHome", filename="build.log", offset=250
                             (the offset comes from the previous read's truncation note)
 
@@ -303,8 +375,8 @@ public class MCPGetAttachmentTool implements MCPTool
     }
 
     /**
-     * Composes the response: the metadata header always, then either nothing more ({@code metadata=true}),
-     * the not-inlineable pointer for a non-text type, or the budgeted text content window.
+     * Composes the response: the metadata header always, then nothing more ({@code metadata=true}) or
+     * the mimetype-routed content (see {@link #contentResult}).
      *
      * @param xdoc the loaded document
      * @param attachment the resolved attachment
@@ -321,12 +393,41 @@ public class MCPGetAttachmentTool implements MCPTool
         if (metadataOnly) {
             return MCPToolSupport.result(header);
         }
-        if (!MCPAttachmentSupport.isTextMimeType(mimeType)) {
-            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + "Content is "
-                + MCPTextGuards.fragment(mimeType)
-                + "; not inlineable as text. Use the Download URL above.");
+        return contentResult(header, attachment, xcontext, offset, mimeType);
+    }
+
+    /**
+     * Routes the content below the header by mimetype: text (SVG included) is windowed inline, PDF and
+     * office documents return their Tika-extracted text, inlineable images return an MCP image content
+     * block, a non-inlineable image type is refused with image-specific wording, and everything else
+     * gets the download pointer.
+     *
+     * @param header the composed metadata header
+     * @param attachment the resolved attachment
+     * @param xcontext the XWiki context
+     * @param offset the number of content lines to skip
+     * @param mimeType the attachment's resolved mimetype
+     * @return the tool result
+     */
+    private McpSchema.CallToolResult contentResult(String header, XWikiAttachment attachment,
+        XWikiContext xcontext, int offset, String mimeType)
+    {
+        if (MCPAttachmentSupport.isTextMimeType(mimeType)) {
+            return textContentResult(header, attachment, xcontext, offset);
         }
-        return textContentResult(header, attachment, xcontext, offset);
+        if (MCPAttachmentSupport.isExtractableMimeType(mimeType)) {
+            return extractedTextResult(header, attachment, xcontext, offset, mimeType);
+        }
+        if (MCPAttachmentSupport.isInlineableImageMimeType(mimeType)) {
+            return imageContentResult(header, attachment, xcontext, mimeType);
+        }
+        if (MCPAttachmentSupport.isImageMimeType(mimeType)) {
+            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + "Image type "
+                + MCPTextGuards.fragment(mimeType) + " is not inlineable" + DOWNLOAD_POINTER_TAIL);
+        }
+        return MCPToolSupport.result(header + DOUBLE_NEW_LINE + "Content is "
+            + MCPTextGuards.fragment(mimeType)
+            + "; not inlineable as text. Use the Download URL above.");
     }
 
     /**
@@ -343,29 +444,166 @@ public class MCPGetAttachmentTool implements MCPTool
     private McpSchema.CallToolResult textContentResult(String header, XWikiAttachment attachment,
         XWikiContext xcontext, int offset)
     {
-        int budget = Math.max(1, MCPSourceText.MAX_OUTPUT_CHARS - header.length());
         MCPAttachmentSupport.TextWindow window;
         try {
-            window = MCPAttachmentSupport.readTextWindow(attachment, xcontext, offset, budget);
+            window = MCPAttachmentSupport.readTextWindow(attachment, xcontext, offset, contentBudget(header));
         } catch (Exception e) {
-            this.logger.warn("MCP get_attachment tool failed to read the content of [{}]: [{}]",
-                attachment.getFilename(), ExceptionUtils.getRootCauseMessage(e));
-            this.logger.debug("MCP get_attachment tool content-read failure details", e);
-            return MCPToolSupport.errorResult(CONTENT_READ_ERROR);
+            return contentReadFailure(attachment, e);
         }
+        return windowResult(header, window, offset, null);
+    }
+
+    /**
+     * Extracts the text of a PDF or office attachment and appends it, windowed, below the header and
+     * the extraction banner. A PARSE failure (encrypted, corrupt, no parser available) degrades
+     * gracefully to the header with a pointer at the download URL - a broken document is a normal
+     * outcome of this path, not a tool error; a STORE failure (the content stream could not be opened
+     * or read) is a real error, routed to the same failure result as the raw-text path's. When the
+     * extractor's own character cap was reached, the final window carries a note that the document
+     * continues (the cut is silent - a clean-looking last window would otherwise be a lie).
+     *
+     * @param header the composed metadata header
+     * @param attachment the resolved attachment
+     * @param xcontext the XWiki context
+     * @param offset the number of extracted-text lines to skip
+     * @param mimeType the attachment's resolved mimetype, for the banner
+     * @return the tool result
+     */
+    private McpSchema.CallToolResult extractedTextResult(String header, XWikiAttachment attachment,
+        XWikiContext xcontext, int offset, String mimeType)
+    {
+        String extracted;
+        try {
+            extracted = MCPAttachmentSupport.extractText(attachment, xcontext);
+        } catch (XWikiException e) {
+            return contentReadFailure(attachment, e);
+        } catch (Exception e) {
+            this.logger.warn("MCP get_attachment tool failed to extract text from [{}]: [{}]",
+                attachment.getFilename(), ExceptionUtils.getRootCauseMessage(e));
+            this.logger.debug("MCP get_attachment tool text-extraction failure details", e);
+            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + EXTRACTION_FAILED_BODY);
+        }
+        if (StringUtils.isBlank(extracted)) {
+            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + NO_EXTRACTED_TEXT_BODY);
+        }
+        String head = header + NEW_LINE + "Text extracted from " + MCPTextGuards.fragment(mimeType)
+            + " (formatting not preserved):";
+        MCPAttachmentSupport.TextWindow window;
+        try {
+            window = MCPAttachmentSupport.readTextWindow(extracted, offset, contentBudget(head));
+        } catch (Exception e) {
+            return contentReadFailure(attachment, e);
+        }
+        return windowResult(head, window, offset, extractionCappedNote(extracted));
+    }
+
+    /**
+     * Builds the note the FINAL extraction window carries when the extracted text's length reached the
+     * extractor's own character cap, or {@code null} when it did not (or the cap is unlimited).
+     *
+     * @param extracted the extracted text
+     * @return the note, or {@code null} when no note applies
+     */
+    private static String extractionCappedNote(String extracted)
+    {
+        int cap = MCPAttachmentSupport.extractionCap();
+        if (cap > 0 && extracted.length() >= cap) {
+            return EXTRACTION_CAPPED_NOTE_PREFIX + cap + EXTRACTION_CAPPED_NOTE_SUFFIX;
+        }
+        return null;
+    }
+
+    /**
+     * Reads an inlineable image below the cap and returns it as an MCP image content block next to the
+     * header. The cap is enforced twice: a declared size above it skips the read entirely, and the
+     * bounded read abandons a stream that yields more than the cap (a declared size that lied),
+     * degrading to the download pointer either way.
+     *
+     * @param header the composed metadata header
+     * @param attachment the resolved attachment
+     * @param xcontext the XWiki context
+     * @param mimeType the attachment's resolved mimetype
+     * @return the tool result
+     */
+    private McpSchema.CallToolResult imageContentResult(String header, XWikiAttachment attachment,
+        XWikiContext xcontext, String mimeType)
+    {
+        long declaredSize = attachment.getLongSize();
+        if (declaredSize > MCPAttachmentSupport.MAX_IMAGE_BYTES) {
+            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + "Image is "
+                + MCPAttachmentSupport.humanSize(declaredSize) + IMAGE_OVER_CAP_TAIL);
+        }
+        byte[] imageBytes;
+        try {
+            imageBytes = MCPAttachmentSupport.readImageBytes(attachment, xcontext);
+        } catch (Exception e) {
+            return contentReadFailure(attachment, e);
+        }
+        if (imageBytes == null) {
+            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + IMAGE_STREAM_OVER_CAP_BODY);
+        }
+        return MCPAttachmentSupport.imageResult(header + DOUBLE_NEW_LINE + IMAGE_MARKER_BODY, imageBytes,
+            mimeType);
+    }
+
+    /**
+     * Composes the result of a window read below the given head block (the header, plus the extraction
+     * banner on the extraction path): the continuation note on a truncated read, the beyond-the-end
+     * message on an offset past the last line, and the no-content body on an empty stored file. The
+     * optional end note is appended only to a FINAL window - one that reached the end of the content -
+     * so a mid-stream window never carries it.
+     *
+     * @param head the header block the window follows
+     * @param window the read outcome
+     * @param offset the number of content lines that were skipped
+     * @param endNote a note appended to the final window, or {@code null} for none
+     * @return the tool result
+     */
+    private McpSchema.CallToolResult windowResult(String head, MCPAttachmentSupport.TextWindow window,
+        int offset, String endNote)
+    {
         if (window.beyondEnd()) {
-            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + "Text content has only "
+            return MCPToolSupport.result(head + DOUBLE_NEW_LINE + "Text content has only "
                 + window.totalLines() + " lines; offset " + offset + " is beyond the end.");
         }
         if (window.truncated()) {
             String notePrefix = window.lineCut() ? LINE_CUT_CONTINUATION_PREFIX : CONTINUATION_PREFIX;
-            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + window.content() + NEW_LINE
+            return MCPToolSupport.result(head + DOUBLE_NEW_LINE + window.content() + NEW_LINE
                 + notePrefix + window.nextOffset() + PERIOD);
         }
         if (window.content().isEmpty()) {
-            return MCPToolSupport.result(header + DOUBLE_NEW_LINE + NO_CONTENT_BODY);
+            return MCPToolSupport.result(head + DOUBLE_NEW_LINE + NO_CONTENT_BODY);
         }
-        return MCPToolSupport.result(header + DOUBLE_NEW_LINE + window.content());
+        String tail = endNote != null ? NEW_LINE + endNote : "";
+        return MCPToolSupport.result(head + DOUBLE_NEW_LINE + window.content() + tail);
+    }
+
+    /**
+     * Computes the character budget left for content under the given head block: the head counts toward
+     * the shared output budget, so the window fills only what remains under it.
+     *
+     * @param head the header block the content follows
+     * @return the remaining character budget, at least 1
+     */
+    private static int contentBudget(String head)
+    {
+        return Math.max(1, MCPSourceText.MAX_OUTPUT_CHARS - head.length());
+    }
+
+    /**
+     * Handles a failed content read uniformly across the content paths: the root cause goes to the
+     * server logs, the agent gets the fixed error message.
+     *
+     * @param attachment the attachment whose read failed
+     * @param e the failure
+     * @return the error result
+     */
+    private McpSchema.CallToolResult contentReadFailure(XWikiAttachment attachment, Exception e)
+    {
+        this.logger.warn("MCP get_attachment tool failed to read the content of [{}]: [{}]",
+            attachment.getFilename(), ExceptionUtils.getRootCauseMessage(e));
+        this.logger.debug("MCP get_attachment tool content-read failure details", e);
+        return MCPToolSupport.errorResult(CONTENT_READ_ERROR);
     }
 
     /**
