@@ -95,6 +95,15 @@
             <artifactId>xwiki-platform-search-solr-api</artifactId>
             <version>${platform.version}</version>
         </dependency>
+        <!-- AttachmentValidator + AttachmentAccessWrapper: write_attachment validates uploads against the
+             wiki's attachment policy (upload_maxsize, mimetype allow/deny lists). API only - the default
+             validator implementation ships with the standard flavor as the
+             xwiki-platform-attachment-validation-default extension. -->
+        <dependency>
+            <groupId>org.xwiki.platform</groupId>
+            <artifactId>xwiki-platform-attachment-validation-api</artifactId>
+            <version>${platform.version}</version>
+        </dependency>
         <!-- TikaUtils (shared Tika instance + detection) and the Tika Metadata/TikaCoreProperties types:
              PDF/office text extraction in get_attachment (MCPAttachmentSupport.extractText). The format
              parsers ship in the XWiki WAR at runtime; this artifact carries the shared instance and
