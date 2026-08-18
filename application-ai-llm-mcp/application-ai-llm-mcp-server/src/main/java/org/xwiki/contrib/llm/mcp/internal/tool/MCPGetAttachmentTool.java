@@ -296,9 +296,11 @@ public class MCPGetAttachmentTool implements MCPTool
                             (the offset comes from the previous read's truncation note)
 
             SEE ALSO
-                man get_document    Lists a document's attachments (the Attachments header line) and
-                                    shows the document version.
-                man                 (no argument) List all tools and reference pages.
+                man get_document        Lists a document's attachments (the Attachments header line)
+                                        and shows the document version.
+                man write_attachment    Attach a file or overwrite an existing attachment.
+                man delete_attachment   Delete an attachment (moves it to the attachment recycle bin).
+                man                     (no argument) List all tools and reference pages.
             """;
     }
 
@@ -347,31 +349,10 @@ public class MCPGetAttachmentTool implements MCPTool
         XWikiDocument xdoc = loadDocument(ref, reference);
         XWikiAttachment attachment = xdoc.getExactAttachment(filename);
         if (attachment == null) {
-            return MCPToolSupport.errorResult(missingAttachmentMessage(filename, reference, xdoc));
+            return MCPToolSupport.errorResult(MCPAttachmentSupport.missingAttachmentMessage(filename,
+                reference, xdoc.getAttachmentList()));
         }
         return respond(xdoc, attachment, offset, metadataOnly);
-    }
-
-    /**
-     * Builds the missing-attachment refusal, teaching the exact filenames that do exist on the document
-     * (fragment-guarded: filenames are wiki-authored) so the agent can correct the call instead of
-     * retrying blindly.
-     *
-     * @param filename the requested filename
-     * @param reference the original reference string, echoed neutralized
-     * @param xdoc the loaded document
-     * @return the agent-facing error message
-     */
-    private String missingAttachmentMessage(String filename, String reference, XWikiDocument xdoc)
-    {
-        String message = "Attachment " + QUOTE + MCPTextGuards.fragment(filename) + QUOTE + " not found on "
-            + QUOTE + MCPTextGuards.fragment(reference) + QUOTE + PERIOD + ' ';
-        var attachments = xdoc.getAttachmentList();
-        if (attachments.isEmpty()) {
-            return message + "This document has no attachments.";
-        }
-        return message + "Attachments on this document: "
-            + MCPAttachmentSupport.attachmentNamesList(attachments) + PERIOD;
     }
 
     /**

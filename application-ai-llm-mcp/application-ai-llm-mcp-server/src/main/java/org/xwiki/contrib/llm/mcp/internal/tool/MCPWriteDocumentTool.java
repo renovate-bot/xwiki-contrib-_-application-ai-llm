@@ -214,7 +214,7 @@ public class MCPWriteDocumentTool implements MCPTool
             NOTES
                 write_document replaces the ENTIRE document body with content; objects, attachments
                 and rights set on the document are untouched. For targeted changes use edit_document
-                instead.
+                instead; attachments are managed with write_attachment and delete_attachment.
                 Write XWiki syntax: "= Heading =", "[[Label>>Target]]" - NOT "# Heading" or
                 "[label](url)".
                 A translation write (locale="fr") targets that language row exactly, like

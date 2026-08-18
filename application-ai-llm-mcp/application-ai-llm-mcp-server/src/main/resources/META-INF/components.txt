@@ -20,6 +20,7 @@ org.xwiki.contrib.llm.mcp.internal.tool.MCPGetSchemaTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPQueryObjectsTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPWriteObjectTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPWriteAttachmentTool
+org.xwiki.contrib.llm.mcp.internal.tool.MCPDeleteAttachmentTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPDeleteObjectTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPWriteSchemaTool
 org.xwiki.contrib.llm.mcp.script.MCPFarmScriptService

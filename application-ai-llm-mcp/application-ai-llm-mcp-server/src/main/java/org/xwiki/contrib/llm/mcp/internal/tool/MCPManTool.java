@@ -158,6 +158,8 @@ public class MCPManTool implements MCPTool
             image:Space.Page@file.png             attachment on another page
             image:https://host/img.png            image at a URL
             [[image:file.png||width="200" alt="logo"]]   image with parameters
+            attach: and image: point at a page's attachments: read one with get_attachment,
+            upload one with write_attachment.
 
         TABLES
             |=Header 1|=Header 2

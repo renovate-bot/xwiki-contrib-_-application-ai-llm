@@ -95,6 +95,11 @@ final class MCPAttachmentSupport
     private static final String COMMA_SEPARATOR = ", ";
 
     /**
+     * Double quote of the echoed argument renderings.
+     */
+    private static final String QUOTE = "\"";
+
+    /**
      * Tail of the {@code +K more} summaries of a capped listing.
      */
     private static final String MORE_SUFFIX = " more";
@@ -387,6 +392,27 @@ final class MCPAttachmentSupport
             names.append(COMMA_SEPARATOR).append(PLUS).append(attachments.size() - shown).append(MORE_SUFFIX);
         }
         return names.toString();
+    }
+
+    /**
+     * Builds the missing-attachment refusal shared by the attachment tools, teaching the exact
+     * filenames that do exist on the document (fragment-guarded: filenames are wiki-authored) so the
+     * agent can correct the call instead of retrying blindly.
+     *
+     * @param filename the requested filename, echoed neutralized
+     * @param reference the original reference string, echoed neutralized
+     * @param attachments the document's attachments, possibly empty
+     * @return the agent-facing error message
+     */
+    static String missingAttachmentMessage(String filename, String reference,
+        List<XWikiAttachment> attachments)
+    {
+        String message = "Attachment " + QUOTE + MCPTextGuards.fragment(filename) + QUOTE + " not found on "
+            + QUOTE + MCPTextGuards.fragment(reference) + QUOTE + '.' + ' ';
+        if (CollectionUtils.isEmpty(attachments)) {
+            return message + "This document has no attachments.";
+        }
+        return message + "Attachments on this document: " + attachmentNamesList(attachments) + '.';
     }
 
     /**
