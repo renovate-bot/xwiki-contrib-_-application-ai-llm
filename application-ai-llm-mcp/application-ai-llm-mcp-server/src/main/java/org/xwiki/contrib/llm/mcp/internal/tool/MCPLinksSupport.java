@@ -65,11 +65,12 @@ import com.xpn.xwiki.doc.XWikiDocument;
  *
  * <p>The backlink index answers RAW hits: farm-wide, without any rights check or hidden filter, one
  * entry per translation of a linking page. Everything this class returns from
- * {@link #backlinks(DocumentReference)} has already been reduced to what the current user may see on
- * this endpoint, in the fixed order reach filter first (an out-of-reach wiki's reference is dropped
- * before any authorization or existence probe can observe it), then the scan ceiling on the sorted
- * set, then the space filter plus view right per reference, then one batched query per wiki dropping
- * hidden and stale (no longer existing) documents.</p>
+ * {@link #backlinks(DocumentReference, boolean)} has already been reduced to what the current user may
+ * see on this endpoint, in the fixed order reach filter first (an out-of-reach wiki's reference is
+ * dropped before any authorization or existence probe can observe it), then the scan ceiling on the
+ * sorted set, then the space filter plus view right per reference, then one batched query per wiki
+ * dropping stale (no longer existing) documents and flagging hidden ones - counted but not listed by
+ * default, listed with a marker when hidden pages are requested.</p>
  *
  * @version $Id$
  * @since 0.9.1
@@ -114,6 +115,12 @@ public class MCPLinksSupport
      * The heading of the outgoing-links block, shared by its populated and empty forms.
      */
     private static final String OUTGOING_HEADING = "Outgoing links: ";
+
+    /**
+     * Marks a hidden document's row when hidden pages are listed, so an agent can tell which links a
+     * reader browsing with the default preference never sees.
+     */
+    private static final String HIDDEN_MARKER = " (hidden)";
 
     @Inject
     private Logger logger;
@@ -189,16 +196,19 @@ public class MCPLinksSupport
      * drops every reference whose wiki is out of this endpoint's reach BEFORE anything else can observe
      * it, sorts by full serialized reference so the scan ceiling and the paging are deterministic, scans
      * at most {@link MCPRowQuery#MAX_FETCH_PER_QUERY} references, keeps the ones passing the space
-     * filter and the view right, and finally drops hidden documents and stale index entries through one
-     * batched query per wiki. The returned rows are display-ready: local names for the endpoint's own
-     * wiki, wiki-prefixed names elsewhere, each passed through the shared fragment guard.
+     * filter and the view right, and finally drops stale index entries and flags hidden documents
+     * through one batched query per wiki. A hidden document is dropped-but-counted by default, or
+     * listed at its sorted position with the {@code (hidden)} marker when hidden pages are requested.
+     * The returned rows are display-ready: local names for the endpoint's own wiki, wiki-prefixed
+     * names elsewhere, each passed through the shared fragment guard.
      *
      * @param target the locale-free document reference whose backlinks are read
+     * @param showHidden whether hidden documents are listed (marked) instead of only counted
      * @return the authorized display rows in their sorted order, the count of authorized-but-hidden
      *     backlinks, and whether the raw set exceeded the scan ceiling (the row count is then a floor)
      * @throws LinkException when the link index read or the batched visibility check fails
      */
-    public BacklinkPage backlinks(DocumentReference target) throws LinkException
+    public BacklinkPage backlinks(DocumentReference target, boolean showHidden) throws LinkException
     {
         Set<EntityReference> raw = this.linkStore.resolveBackLinkedEntities(target);
         Set<DocumentReference> unique = new HashSet<>();
@@ -226,12 +236,19 @@ public class MCPLinksSupport
                 authorized.add(reference);
             }
         }
-        VisibleSplit split = filterVisible(authorized);
         List<String> rows = new ArrayList<>();
-        for (DocumentReference reference : split.visible()) {
-            rows.add(display(reference));
+        int hiddenCount = 0;
+        for (FlaggedReference entry : visibilityOf(authorized)) {
+            if (!entry.hidden()) {
+                rows.add(display(entry.reference()));
+            } else {
+                hiddenCount++;
+                if (showHidden) {
+                    rows.add(display(entry.reference()) + HIDDEN_MARKER);
+                }
+            }
         }
-        return new BacklinkPage(rows, split.hiddenCount(), capped);
+        return new BacklinkPage(rows, hiddenCount, capped);
     }
 
     /**
@@ -292,41 +309,38 @@ public class MCPLinksSupport
     }
 
     /**
-     * Splits an authorized reference list into the visible references and the hidden count, dropping
-     * the stale index entries, with batched queries per wiki: the references are grouped by wiki, each
-     * group's local full names are bound into {@link #VISIBILITY_QUERY} in chunks, and each reference
-     * is then routed by its answered hidden flag. A name absent from the answer is a stale entry (the
-     * document no longer exists) and is dropped uncounted; a hidden document is dropped but COUNTED,
-     * so the tool can report that hidden pages link here without listing them. Only already-authorized
-     * references reach this method, so the hidden count can never disclose denied content. The input
-     * order is preserved.
+     * Resolves the visibility of an authorized reference list, dropping the stale index entries, with
+     * batched queries per wiki: the references are grouped by wiki, each group's local full names are
+     * bound into {@link #VISIBILITY_QUERY} in chunks, and each reference is then routed by its
+     * answered hidden flag. A name absent from the answer is a stale entry (the document no longer
+     * exists) and is dropped uncounted; the surviving references keep their per-wiki-group order and
+     * carry their hidden flag, so the caller decides whether a hidden document is listed or only
+     * counted. Only already-authorized references reach this method, so no flag can disclose denied
+     * content.
      *
      * @param references the authorized references, at most {@link MCPRowQuery#MAX_FETCH_PER_QUERY}
-     * @return the visible references in their input order, and the count of hidden ones
+     * @return the existing references with their hidden flags, in their per-wiki-group order
      * @throws LinkException when a batched query fails: the safe backlink set cannot be produced, so
      *     the failure surfaces on the single backlink failure channel
      */
-    private VisibleSplit filterVisible(List<DocumentReference> references) throws LinkException
+    private List<FlaggedReference> visibilityOf(List<DocumentReference> references) throws LinkException
     {
         Map<String, List<DocumentReference>> byWiki = new LinkedHashMap<>();
         for (DocumentReference reference : references) {
             byWiki.computeIfAbsent(reference.getWikiReference().getName(), key -> new ArrayList<>())
                 .add(reference);
         }
-        List<DocumentReference> visible = new ArrayList<>();
-        int hiddenCount = 0;
+        List<FlaggedReference> flagged = new ArrayList<>();
         for (Map.Entry<String, List<DocumentReference>> entry : byWiki.entrySet()) {
             Map<String, Boolean> hiddenFlags = hiddenFlagsOf(entry.getKey(), entry.getValue());
             for (DocumentReference reference : entry.getValue()) {
                 Boolean hidden = hiddenFlags.get(this.localSerializer.serialize(reference));
-                if (Boolean.FALSE.equals(hidden)) {
-                    visible.add(reference);
-                } else if (hidden != null) {
-                    hiddenCount++;
+                if (hidden != null) {
+                    flagged.add(new FlaggedReference(reference, hidden));
                 }
             }
         }
-        return new VisibleSplit(visible, hiddenCount);
+        return flagged;
     }
 
     /**
@@ -463,12 +477,12 @@ public class MCPLinksSupport
 
     /**
      * One authorized page of the backlink pipeline: the display-ready rows in their deterministic
-     * order, the count of authorized-but-hidden backlinks (reported as a count, never listed), and
-     * whether the raw index answer exceeded the scan ceiling (the row count is then a floor, rendered
-     * as {@code N+}).
+     * order, the count of authorized-but-hidden backlinks (dropped from the rows by default, listed
+     * marked when hidden pages are requested), and whether the raw index answer exceeded the scan
+     * ceiling (the row count is then a floor, rendered as {@code N+}).
      *
      * @param rows the authorized display rows, sorted
-     * @param hiddenCount how many authorized backlinks were dropped as hidden documents
+     * @param hiddenCount how many authorized backlinks are hidden documents
      * @param capped whether the raw reference set exceeded the scan ceiling
      * @version $Id$
      */
@@ -477,14 +491,14 @@ public class MCPLinksSupport
     }
 
     /**
-     * The answer of the batched visibility filter: the visible references and the count of the hidden
-     * ones (stale entries appear in neither).
+     * One surviving reference of the batched visibility check with its hidden flag (stale entries are
+     * already dropped).
      *
-     * @param visible the existing, non-hidden references in their input order
-     * @param hiddenCount how many references were dropped as hidden documents
+     * @param reference the existing, authorized reference
+     * @param hidden whether the document is hidden
      * @version $Id$
      */
-    private record VisibleSplit(List<DocumentReference> visible, int hiddenCount)
+    private record FlaggedReference(DocumentReference reference, boolean hidden)
     {
     }
 }

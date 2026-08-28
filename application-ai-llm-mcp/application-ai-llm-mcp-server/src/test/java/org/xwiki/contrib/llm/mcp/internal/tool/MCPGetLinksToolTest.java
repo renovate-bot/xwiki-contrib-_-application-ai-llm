@@ -101,6 +101,8 @@ class MCPGetLinksToolTest extends AbstractMCPToolTest
 
     private static final String OFFSET_KEY = "offset";
 
+    private static final String SHOW_HIDDEN_KEY = "showHidden";
+
     private static final String WIKI_KEY = "wiki";
 
     private static final String OUT = "out";
@@ -334,6 +336,77 @@ class MCPGetLinksToolTest extends AbstractMCPToolTest
         assertTrue(text.contains("No visible backlinks (1 hidden page links here)."), text);
         // The teaching note would be a lie here: backlinks ARE indexed, they are just hidden.
         assertFalse(text.contains("No indexed backlinks"), text);
+    }
+
+    @Test
+    void showHiddenListsHiddenRowsMarkedInSortOrder() throws Exception
+    {
+        stubBacklinks(LINKING_A, LINKING_B, LINKING_C);
+        when(this.rowQuery.rows(anyString(), eq(WIKI), eq(NAMES_BIND), any(), anyInt()))
+            .thenReturn(List.<Object[]>of(new Object[] {"AAA.One", Boolean.FALSE},
+                new Object[] {"BBB.Two", Boolean.TRUE},
+                new Object[] {"CCC.Three", Boolean.FALSE}));
+
+        String text = callText(Map.of(REFERENCE_KEY, REF, SHOW_HIDDEN_KEY, true));
+
+        // The hidden page joins the list at its sorted position, marked so an agent can tell which
+        // links a reader browsing with the default preference never sees; the count line switches to
+        // get_tree's "hidden included" suffix instead of the "(+N hidden)" count.
+        assertTrue(text.contains("Incoming links: 3 backlinks, hidden included\n"), text);
+        assertTrue(text.contains("AAA.One\nBBB.Two (hidden)\nCCC.Three"), text);
+        assertFalse(text.contains("(+"), text);
+        assertTrue(text.contains("Showing backlinks 1-3 of 3."), text);
+    }
+
+    @Test
+    void showHiddenPagesAcrossTheMergedList() throws Exception
+    {
+        stubBacklinks(LINKING_A, LINKING_B, LINKING_C);
+        when(this.rowQuery.rows(anyString(), eq(WIKI), eq(NAMES_BIND), any(), anyInt()))
+            .thenReturn(List.<Object[]>of(new Object[] {"AAA.One", Boolean.FALSE},
+                new Object[] {"BBB.Two", Boolean.TRUE},
+                new Object[] {"CCC.Three", Boolean.FALSE}));
+
+        String firstPage = callText(Map.of(REFERENCE_KEY, REF, SHOW_HIDDEN_KEY, true, LIMIT_KEY, 2));
+        String secondPage = callText(Map.of(REFERENCE_KEY, REF, SHOW_HIDDEN_KEY, true, LIMIT_KEY, 2,
+            OFFSET_KEY, 2));
+
+        // Hidden rows page like any other row of the merged list.
+        assertTrue(firstPage.contains("AAA.One\nBBB.Two (hidden)"), firstPage);
+        assertFalse(firstPage.contains("CCC.Three"), firstPage);
+        assertTrue(firstPage.contains("Showing backlinks 1-2 of 3. Continue with offset=2."), firstPage);
+        assertTrue(secondPage.contains("CCC.Three"), secondPage);
+        assertFalse(secondPage.contains("BBB.Two"), secondPage);
+        assertTrue(secondPage.contains("Showing backlinks 3-3 of 3."), secondPage);
+    }
+
+    @Test
+    void showHiddenListsHiddenOnlyBacklinksInsteadOfTheCountMessage() throws Exception
+    {
+        stubBacklinks(LINKING_A);
+        when(this.rowQuery.rows(anyString(), eq(WIKI), eq(NAMES_BIND), any(), anyInt()))
+            .thenReturn(List.<Object[]>of(new Object[] {"AAA.One", Boolean.TRUE}));
+
+        String text = callText(Map.of(REFERENCE_KEY, REF, SHOW_HIDDEN_KEY, true));
+
+        assertTrue(text.contains("Incoming links: 1 backlink, hidden included"), text);
+        assertTrue(text.contains("AAA.One (hidden)"), text);
+        assertFalse(text.contains("No visible backlinks"), text);
+        assertFalse(text.contains("(+"), text);
+    }
+
+    @Test
+    void showHiddenIsRejectedWithOutDirection() throws Exception
+    {
+        for (Object value : List.of(Boolean.TRUE, Boolean.FALSE)) {
+            McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, DIRECTION_KEY, OUT,
+                SHOW_HIDDEN_KEY, value));
+
+            assertEquals(Boolean.TRUE, result.isError(), String.valueOf(value));
+            assertTrue(textOf(result).contains("'showHidden' only applies to the backlink list"),
+                textOf(result));
+        }
+        verify(this.documentAccessBridge, never()).getDocumentInstance(any(DocumentReference.class));
     }
 
     @Test
@@ -816,5 +889,18 @@ class MCPGetLinksToolTest extends AbstractMCPToolTest
             (Map<?, ?>) this.tool.getToolDefinition().inputSchema().get("properties");
         assertFalse(localProperties.containsKey(WIKI_KEY));
         assertNotEquals(reachedProperties, localProperties);
+    }
+
+    @Test
+    void showHiddenIsAdvertisedRegardlessOfReach()
+    {
+        Map<?, ?> reachedProperties =
+            (Map<?, ?>) this.tool.getToolDefinition().inputSchema().get("properties");
+        assertTrue(reachedProperties.containsKey(SHOW_HIDDEN_KEY));
+
+        when(this.wikiReach.isReachEnabled()).thenReturn(false);
+        Map<?, ?> localProperties =
+            (Map<?, ?>) this.tool.getToolDefinition().inputSchema().get("properties");
+        assertTrue(localProperties.containsKey(SHOW_HIDDEN_KEY));
     }
 }

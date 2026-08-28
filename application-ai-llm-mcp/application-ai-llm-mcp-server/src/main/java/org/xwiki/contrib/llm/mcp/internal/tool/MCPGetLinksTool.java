@@ -89,6 +89,8 @@ public class MCPGetLinksTool implements MCPTool
 
     private static final String OFFSET_PARAM = "offset";
 
+    private static final String SHOW_HIDDEN_PARAM = "showHidden";
+
     private static final String DIRECTION_IN = "in";
 
     private static final String DIRECTION_OUT = "out";
@@ -107,6 +109,13 @@ public class MCPGetLinksTool implements MCPTool
      * Marks a capped total as a floor ({@code N+}).
      */
     private static final String FLOOR_MARK = "+";
+
+    /**
+     * The count-line suffix of a hidden-including backlink list, in {@code get_tree}'s header style:
+     * it replaces the {@code (+N hidden)} count, since the hidden rows are then listed (marked) in the
+     * list itself.
+     */
+    private static final String HIDDEN_INCLUDED = ", hidden included";
 
     /**
      * The backlink page size when {@code limit} is omitted.
@@ -185,6 +194,14 @@ public class MCPGetLinksTool implements MCPTool
         + "(outgoing links are always listed whole).";
 
     /**
+     * Error returned when {@code showHidden} is combined with {@code direction="out"}: hidden
+     * filtering only exists on the backlink side, outgoing links being listed as authored.
+     */
+    private static final String SHOW_HIDDEN_DIRECTION_ERROR = MCPToolSupport.ERROR_PREFIX
+        + SHOW_HIDDEN_PARAM + "' only applies to the backlink list; drop it with direction=\"out\" "
+        + "(outgoing links are listed as authored, with no hidden filtering).";
+
+    /**
      * The man-page NOTES shown on every endpoint, without any cross-wiki mention.
      */
     private static final String MAN_NOTES_BASE = """
@@ -192,9 +209,10 @@ public class MCPGetLinksTool implements MCPTool
             direction="in" (the default) answers "which pages link HERE?": every page whose
             stored content or objects carries a static link to the document. The list and
             its count cover ONLY what you may view on this endpoint: other wikis appear
-            only within the endpoint's reach, and denied and hidden pages are dropped. The
-            target itself does not have to exist - backlinks of a missing page are exactly
-            the links to repair after a delete or a rename.
+            only within the endpoint's reach, denied pages are dropped, and hidden pages
+            are counted but not listed unless showHidden=true. The target itself does not
+            have to exist - backlinks of a missing page are exactly the links to repair
+            after a delete or a rename.
 
             direction="out" lists the document's own outgoing links, resolved live from its
             stored content plus its objects' wiki-content fields (links buried in object
@@ -221,6 +239,17 @@ public class MCPGetLinksTool implements MCPTool
         + "    always listed whole. A very broad backlink set stops scanning at a "
         + MCPRowQuery.MAX_FETCH_PER_QUERY + "-reference\n"
         + "    ceiling: the count then reads \"N+\".\n";
+
+    /**
+     * The hidden-pages NOTES paragraph, teaching the same preference-independence the {@code get_tree}
+     * man page teaches.
+     */
+    private static final String MAN_NOTES_HIDDEN = """
+
+            Hidden backlinks are counted but not listed by default ("+N hidden"), regardless
+            of your account's "display hidden documents" preference. Set showHidden=true to
+            list them too, each marked (hidden); the count line then reads "hidden included".
+        """;
 
     /**
      * The cross-wiki NOTES paragraph, appended only when the endpoint has cross-wiki reach - the man
@@ -270,14 +299,14 @@ public class MCPGetLinksTool implements MCPTool
     /**
      * The full man page for cross-wiki enabled endpoints.
      */
-    private static final String MAN_PAGE = MAN_NOTES_BASE + MAN_NOTES_PAGING + MAN_NOTES_CROSS_WIKI
-        + MAN_EXAMPLES_BASE + MAN_EXAMPLE_CROSS_WIKI + MAN_TAIL;
+    private static final String MAN_PAGE = MAN_NOTES_BASE + MAN_NOTES_PAGING + MAN_NOTES_HIDDEN
+        + MAN_NOTES_CROSS_WIKI + MAN_EXAMPLES_BASE + MAN_EXAMPLE_CROSS_WIKI + MAN_TAIL;
 
     /**
      * The man page for reach-off endpoints: no cross-wiki paragraph, no wiki-parameter example.
      */
     private static final String MAN_PAGE_LOCAL =
-        MAN_NOTES_BASE + MAN_NOTES_PAGING + MAN_EXAMPLES_BASE + MAN_TAIL;
+        MAN_NOTES_BASE + MAN_NOTES_PAGING + MAN_NOTES_HIDDEN + MAN_EXAMPLES_BASE + MAN_TAIL;
 
     /**
      * The two declared-parameter variants (see {@link MCPReachAwareParams}): the local variant drops
@@ -326,6 +355,9 @@ public class MCPGetLinksTool implements MCPTool
                 + "). Backlink list only - not valid with direction=\"out\".")
             .integer(OFFSET_PARAM, "How many backlinks to skip (paging; default 0). Backlink list only - "
                 + "not valid with direction=\"out\".")
+            .bool(SHOW_HIDDEN_PARAM, "If true, list hidden pages in the backlink list, each marked "
+                + "(hidden) (default false: hidden backlinks are only counted, regardless of your "
+                + "profile preference). Backlink list only - not valid with direction=\"out\".")
             .build();
     }
 
@@ -408,9 +440,9 @@ public class MCPGetLinksTool implements MCPTool
 
     /**
      * Parses and cross-validates the direction-dependent arguments into one value: the direction must
-     * be a known value, {@code locale} is rejected outside {@code direction="out"} and {@code limit}/
-     * {@code offset} are rejected with it, so a malformed call teaches rather than pretends. The limit
-     * is clamped to its accepted range and a negative offset folds to zero.
+     * be a known value, {@code locale} is rejected outside {@code direction="out"} while {@code limit}/
+     * {@code offset}/{@code showHidden} are rejected with it, so a malformed call teaches rather than
+     * pretends. The limit is clamped to its accepted range and a negative offset folds to zero.
      *
      * @param args the tool call arguments
      * @return the validated request
@@ -423,7 +455,11 @@ public class MCPGetLinksTool implements MCPTool
         if (locale != null && !DIRECTION_OUT.equals(direction)) {
             throw new IllegalArgumentException(LOCALE_DIRECTION_ERROR);
         }
-        return withPaging(args, direction, locale);
+        Boolean showHidden = PARAMS.parser().boolOrNull(args, SHOW_HIDDEN_PARAM);
+        if (showHidden != null && DIRECTION_OUT.equals(direction)) {
+            throw new IllegalArgumentException(SHOW_HIDDEN_DIRECTION_ERROR);
+        }
+        return withPaging(args, direction, locale, Boolean.TRUE.equals(showHidden));
     }
 
     /**
@@ -457,10 +493,12 @@ public class MCPGetLinksTool implements MCPTool
      * @param args the tool call arguments
      * @param direction the validated direction
      * @param locale the validated {@code locale} argument, or {@code null}
+     * @param showHidden the validated {@code showHidden} argument, absence folded to {@code false}
      * @return the validated request
      * @throws IllegalArgumentException with the agent-facing message on an invalid combination
      */
-    private static LinksRequest withPaging(Map<String, Object> args, String direction, Locale locale)
+    private static LinksRequest withPaging(Map<String, Object> args, String direction, Locale locale,
+        boolean showHidden)
     {
         Integer rawLimit = PARAMS.parser().integer(args, LIMIT_PARAM);
         Integer rawOffset = PARAMS.parser().integer(args, OFFSET_PARAM);
@@ -469,7 +507,7 @@ public class MCPGetLinksTool implements MCPTool
         }
         int limit = Math.min(Math.max(rawLimit != null ? rawLimit : DEFAULT_LIMIT, 1), MAX_LIMIT);
         int offset = Math.max(rawOffset != null ? rawOffset : 0, 0);
-        return new LinksRequest(direction, locale, offset, limit);
+        return new LinksRequest(direction, locale, offset, limit, showHidden);
     }
 
     /**
@@ -514,13 +552,13 @@ public class MCPGetLinksTool implements MCPTool
         throws LinkException
     {
         boolean exists = this.linksSupport.documentExists(ref, reference);
-        MCPLinksSupport.BacklinkPage page = this.linksSupport.backlinks(ref);
+        MCPLinksSupport.BacklinkPage page = this.linksSupport.backlinks(ref, req.showHidden());
         StringBuilder body = new StringBuilder(LINKS_OF_PREFIX).append(this.linksSupport.canonical(ref))
             .append(DIRECTION_TAG).append(req.direction()).append(')');
         if (!exists) {
             body.append(NEW_LINE).append(MISSING_TARGET_NOTE);
         }
-        InSection in = inSection(page, req.offset(), req.limit());
+        InSection in = inSection(page, req);
         body.append(DOUBLE_NEW_LINE).append(in.block());
         if (DIRECTION_BOTH.equals(req.direction())) {
             body.append(DOUBLE_NEW_LINE)
@@ -538,19 +576,19 @@ public class MCPGetLinksTool implements MCPTool
 
     /**
      * Renders the incoming section: the counting heading (the count is authorized-only, a floor marked
-     * {@code N+} when the scan ceiling was hit, with the authorized-but-hidden count appended), then
-     * either the requested page of rows with its paging footer, the applicable zero-rows note, or the
-     * past-the-end note.
+     * {@code N+} when the scan ceiling was hit, with the authorized-but-hidden count appended when
+     * hidden pages are not listed), then either the requested page of rows with its paging footer, the
+     * applicable zero-rows note, or the past-the-end note.
      *
      * @param page the authorized backlink page
-     * @param offset the number of backlinks to skip
-     * @param limit the page size
+     * @param req the validated request, for the paging values and the hidden-inclusion flag
      * @return the rendered section block and its footer ({@code null} when no rows are shown)
      */
-    private static InSection inSection(MCPLinksSupport.BacklinkPage page, int offset, int limit)
+    private static InSection inSection(MCPLinksSupport.BacklinkPage page, LinksRequest req)
     {
+        int offset = req.offset();
         int total = page.rows().size();
-        StringBuilder block = new StringBuilder(countLine(page));
+        StringBuilder block = new StringBuilder(countLine(page, req.showHidden()));
         if (total == 0) {
             String note = zeroNote(page);
             if (note != null) {
@@ -563,7 +601,7 @@ public class MCPGetLinksTool implements MCPTool
                 .append("; this document has ").append(totalPhrase(page)).append(PERIOD);
             return new InSection(block.toString(), null);
         }
-        List<String> rows = page.rows().subList(offset, Math.min(offset + limit, total));
+        List<String> rows = page.rows().subList(offset, Math.min(offset + req.limit(), total));
         block.append(NEW_LINE).append(String.join(NEW_LINE, rows));
         String footer = "Showing backlinks " + (offset + 1) + "-" + (offset + rows.size()) + " of "
             + total + (page.capped() ? FLOOR_MARK : "") + PERIOD;
@@ -575,16 +613,20 @@ public class MCPGetLinksTool implements MCPTool
 
     /**
      * Renders the counting heading of the incoming section: the authorized total (with its {@code +}
-     * floor mark when capped, and the singular noun for exactly one), plus the authorized-but-hidden
-     * count when hidden pages link here.
+     * floor mark when capped, and the singular noun for exactly one), plus either the
+     * {@code hidden included} suffix when hidden pages are listed in the rows, or the
+     * authorized-but-hidden count when hidden pages link here without being listed.
      *
      * @param page the authorized backlink page
+     * @param showHidden whether hidden pages are listed in the rows
      * @return the heading line
      */
-    private static String countLine(MCPLinksSupport.BacklinkPage page)
+    private static String countLine(MCPLinksSupport.BacklinkPage page, boolean showHidden)
     {
         String line = "Incoming links: " + totalPhrase(page);
-        if (page.hiddenCount() > 0) {
+        if (showHidden) {
+            line += HIDDEN_INCLUDED;
+        } else if (page.hiddenCount() > 0) {
             line += " (+" + page.hiddenCount() + " hidden)";
         }
         return line;
@@ -642,9 +684,11 @@ public class MCPGetLinksTool implements MCPTool
      * @param locale the {@code locale} argument, or {@code null}; only set with {@code direction="out"}
      * @param offset the non-negative {@code offset} argument
      * @param limit the clamped {@code limit} argument
+     * @param showHidden whether hidden pages are listed in the backlink rows; never set with
+     *     {@code direction="out"}
      * @version $Id$
      */
-    private record LinksRequest(String direction, Locale locale, int offset, int limit)
+    private record LinksRequest(String direction, Locale locale, int offset, int limit, boolean showHidden)
     {
     }
 
