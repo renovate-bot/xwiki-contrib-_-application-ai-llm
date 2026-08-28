@@ -519,6 +519,7 @@ public class MCPGetDocumentTool implements MCPTool
 
             SEE ALSO
                 man get_attachment  Read one attachment listed by the Attachments header line.
+                man get_history     Revision history: list revisions, read an old version, or diff two.
                 man xwiki-syntax    XWiki 2.1 syntax reference (for the editable source you read and write).
                 man                 (no argument) List all tools and reference pages.
             """;

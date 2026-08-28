@@ -238,11 +238,13 @@ public class MCPWriteDocumentTool implements MCPTool
                              Version line), then write_document reference="Sandbox.WebHome",
                              locale="fr", base_version="1.1", content="..."
                 Conflict:    a "Version conflict" result means the document changed since you read
-                             it - re-read it with get_document and retry with the current version.
+                             it - get_history (diff mode) shows what changed; re-read it with
+                             get_document and retry with the current version.
 
             SEE ALSO
                 man edit_document   Targeted exact-string edits; preferred for small changes.
                 man get_document    Read a document's source and current version.
+                man get_history     See what changed after a version conflict; read an old revision.
                 man xwiki-syntax    XWiki 2.1 syntax reference for writing page source.
                 man                 (no argument) List all tools and reference pages.
             """;

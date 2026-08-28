@@ -310,7 +310,8 @@ public class MCPEditDocumentTool implements MCPTool
         return """
             NOTES
                 Copy old_string verbatim from get_document output, without the line-number prefix.
-                If old_string is not found, the document changed since you read it - re-read and retry.
+                If old_string is not found, the document changed since you read it - re-read and retry
+                (get_history's diff mode shows what changed since a version you read).
                 When editing, match the document's existing syntax (shown by get_document). New documents
                 use XWiki syntax: "= Heading =", "[[Label>>Target]]" - NOT "# Heading" or "[label](url)".
                 To append to a large page, anchor on the tail: old_string = the exact final line(s) of
@@ -337,6 +338,7 @@ public class MCPEditDocumentTool implements MCPTool
 
             SEE ALSO
                 man write_document  Create a document or replace its entire content.
+                man get_history     See what changed when an edit or base_version no longer matches.
                 man xwiki-syntax    XWiki 2.1 syntax reference for writing page source.
                 man                 (no argument) List all tools and reference pages.
             """;

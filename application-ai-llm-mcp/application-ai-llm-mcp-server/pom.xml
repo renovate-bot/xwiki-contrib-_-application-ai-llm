@@ -158,6 +158,18 @@
             <artifactId>xwiki-commons-xml</artifactId>
             <version>${commons.version}</version>
         </dependency>
+        <!-- DiffManager (diff computation) and Splitter/UnifiedDiffDisplayer/UnifiedDiffBlock (unified
+             hunk rendering): the get_history tool's diff mode (MCPHistorySupport). -->
+        <dependency>
+            <groupId>org.xwiki.commons</groupId>
+            <artifactId>xwiki-commons-diff-api</artifactId>
+            <version>${commons.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.xwiki.commons</groupId>
+            <artifactId>xwiki-commons-diff-display</artifactId>
+            <version>${commons.version}</version>
+        </dependency>
         <!-- MCP SDK: core transport + Jackson 2.x JSON mapping.
              jackson-annotations and reactive-streams are excluded from mcp-core via
              dependencyManagement in the root pom; this also covers the transitive path

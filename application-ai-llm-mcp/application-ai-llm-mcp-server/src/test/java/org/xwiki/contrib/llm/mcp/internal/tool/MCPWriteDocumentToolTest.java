@@ -315,6 +315,9 @@ class MCPWriteDocumentToolTest extends AbstractMCPWriteToolTest
         assertTrue(text.contains("Version conflict"), text);
         assertTrue(text.contains(currentVersion), text);
         assertTrue(text.contains("retry"), text);
+        // The refusal points the agent at the diff of what changed since its stale read, keyed on the
+        // very base_version it sent.
+        assertTrue(text.contains("See what changed with get_history (from=1.0)"), text);
         assertEquals(OLD_BODY, loadDocument(oldcore).getContent());
         assertEquals(currentVersion, loadDocument(oldcore).getVersion());
     }

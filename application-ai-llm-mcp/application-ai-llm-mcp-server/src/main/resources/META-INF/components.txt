@@ -11,6 +11,8 @@ org.xwiki.contrib.llm.mcp.internal.tool.MCPQueryDocumentsTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPManTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPGetDocumentTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPGetAttachmentTool
+org.xwiki.contrib.llm.mcp.internal.tool.MCPGetHistoryTool
+org.xwiki.contrib.llm.mcp.internal.tool.MCPHistorySupport
 org.xwiki.contrib.llm.mcp.internal.tool.MCPEditDocumentTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPWriteDocumentTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPDeleteDocumentTool

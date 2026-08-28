@@ -285,10 +285,12 @@ public class MCPDeleteDocumentTool implements MCPTool
                 Delete:      get_document reference="Sandbox.Old" (note its Version line),
                              then delete_document reference="Sandbox.Old", base_version="2.1"
                 Conflict:    a "Version conflict" result means the document changed since you read
-                             it - re-read it with get_document and retry if you still intend it.
+                             it - get_history (diff mode) shows what changed; re-read it with
+                             get_document and retry if you still intend it.
 
             SEE ALSO
                 man get_document    Read a document's source and current version.
+                man get_history     See what changed after a version conflict.
                 man write_document  Create a document or replace its entire content.
                 man                 (no argument) List all tools and reference pages.
             """;

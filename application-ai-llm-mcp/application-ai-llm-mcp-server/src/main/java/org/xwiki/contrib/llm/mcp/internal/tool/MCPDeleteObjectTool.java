@@ -202,12 +202,14 @@ public class MCPDeleteObjectTool implements MCPTool
                              delete_object reference="Blog.MyPost", class="XWiki.XWikiComments",
                              object=1, base_version="4.2"
                 Conflict:    a "Version conflict" result means the document changed since you
-                             read it - re-read it and retry if you still intend the removal.
+                             read it - get_history (diff mode) shows what changed; re-read it
+                             and retry if you still intend the removal.
 
             SEE ALSO
                 man query_objects    Find objects, their numbers ("object N") and field values.
                 man write_object     Create an object or set fields on an existing one.
                 man get_schema       The classes of the wiki and each class's fields and types.
+                man get_history      See what changed after a version conflict.
                 man                  (no argument) List all tools and reference pages.
             """;
     }

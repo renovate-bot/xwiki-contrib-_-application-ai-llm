@@ -209,11 +209,13 @@ public class MCPDeleteAttachmentTool implements MCPTool
                              delete_attachment reference="Sandbox.WebHome",
                              filename="report.pdf", base_version="3.2"
                 Conflict:    a "Version conflict" result means the document changed since you
-                             read it - re-read it and retry if you still intend the removal.
+                             read it - get_history (diff mode) shows what changed; re-read it
+                             and retry if you still intend the removal.
 
             SEE ALSO
                 man get_attachment      Read an attachment's content or metadata (and the version).
                 man write_attachment    Attach a file or overwrite an existing attachment.
+                man get_history         See what changed after a version conflict.
                 man                     (no argument) List all tools and reference pages.
             """;
     }

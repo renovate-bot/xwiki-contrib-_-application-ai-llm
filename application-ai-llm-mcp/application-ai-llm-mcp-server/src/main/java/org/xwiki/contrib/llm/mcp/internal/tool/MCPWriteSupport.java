@@ -736,15 +736,19 @@ final class MCPWriteSupport
      *            write, or {@link #translationSubject(Locale)} for a translation-row write
      * @param currentVersion the row's current version
      * @param baseVersion the version the agent read
-     * @param retryAction the tool-specific closing instruction, following "Re-read it with get_document
-     *            and " (e.g. {@code "retry."})
+     * @param retryAction the tool-specific closing instruction, following "then re-read it with
+     *            get_document and " (e.g. {@code "retry."})
      * @return the agent-facing error message
      */
     static String versionConflictError(String subject, String currentVersion, String baseVersion,
         String retryAction)
     {
+        // The base version is agent-supplied and echoed twice: neutralize and clamp it once, so a crafted
+        // value can neither forge message lines nor dominate them.
+        String safeBaseVersion = MCPTextGuards.fragment(baseVersion);
         return "Version conflict: " + subject + " is now at version " + currentVersion + " but base_version is "
-            + baseVersion + ". Re-read it with get_document and " + retryAction;
+            + safeBaseVersion + ". See what changed with get_history (from=" + safeBaseVersion + "), then "
+            + "re-read it with get_document and " + retryAction;
     }
 
     /**
