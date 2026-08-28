@@ -113,6 +113,14 @@
             <artifactId>xwiki-platform-tika-detect</artifactId>
             <version>${platform.version}</version>
         </dependency>
+        <!-- LinkStore + LinkException: the get_links tool's backlink reads against the Solr-backed
+             link index (MCPLinksSupport). Arrives transitively via search-solr-api; declared
+             explicitly since we import it directly. -->
+        <dependency>
+            <groupId>org.xwiki.platform</groupId>
+            <artifactId>xwiki-platform-link</artifactId>
+            <version>${platform.version}</version>
+        </dependency>
         <!-- Admin config reading: DocumentAccessBridge for XObject property access,
              document events for config-change-triggered server rebuilds,
              and DocumentModelBridge used in the event listener. -->

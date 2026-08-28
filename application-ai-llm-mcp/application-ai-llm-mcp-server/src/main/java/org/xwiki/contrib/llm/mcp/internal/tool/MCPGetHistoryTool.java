@@ -335,6 +335,7 @@ public class MCPGetHistoryTool implements MCPTool
 
             SEE ALSO
                 man get_document    Read the CURRENT content and version (the base_version source).
+                man get_links       Who links to this document (e.g. before reverting a rename).
                 man write_document  Replace a document's content (revert = write an old revision back).
                 man edit_document   Targeted exact-string edits, e.g. after a conflict merge.
                 man                 (no argument) List all tools and reference pages.

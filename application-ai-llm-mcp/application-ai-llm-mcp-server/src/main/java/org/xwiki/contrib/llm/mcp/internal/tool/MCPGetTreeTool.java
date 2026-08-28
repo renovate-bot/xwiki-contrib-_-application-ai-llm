@@ -451,6 +451,7 @@ public class MCPGetTreeTool implements MCPTool
         SEE ALSO
             man get_document       Read one page found here, by its Reference.
             man query_documents    Search documents when you know keywords rather than location.
+            man get_links          Follow link structure instead of hierarchy (backlinks/outgoing).
             man                    (no argument) List all tools and reference pages.
         """;
 
