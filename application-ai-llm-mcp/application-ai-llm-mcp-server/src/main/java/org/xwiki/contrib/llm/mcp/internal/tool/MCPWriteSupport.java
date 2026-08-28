@@ -43,13 +43,15 @@ import com.xpn.xwiki.doc.XWikiDocument;
 import io.modelcontextprotocol.spec.McpSchema;
 
 /**
- * Shared write-path plumbing for the document-writing MCP tools ({@link MCPEditDocumentTool},
+ * Shared plumbing of the document-writing MCP tools ({@link MCPEditDocumentTool},
  * {@link MCPWriteDocumentTool}, {@link MCPDeleteDocumentTool}): write-right resolution, the
  * authenticated-user guard and target-wiki context switch around a write, the {@code [AI]}-prefixed
  * version-comment construction, the minor-edit policy, the review-URL result line and the agent-facing
- * message fragments the tools' {@code base_version} checks share. Not a component: a plain holder of
- * static helpers, kept in this module so the oldcore types it handles ({@link XWikiContext},
- * {@link XWikiDocument}) stay out of the API module's surface.
+ * message fragments the tools' {@code base_version} checks share. The default-language predicate
+ * ({@link #isDefaultLanguageRequest(XWikiContext, XWikiDocument, Locale)}) is also the read side's:
+ * {@link MCPTranslationSupport} delegates to it, so reads and writes route a {@code locale} argument
+ * identically. Not a component: a plain holder of static helpers, kept in this module so the oldcore
+ * types it handles ({@link XWikiContext}, {@link XWikiDocument}) stay out of the API module's surface.
  *
  * @version $Id$
  * @since 0.9.1
@@ -406,7 +408,8 @@ final class MCPWriteSupport
      * (extension document initializers, REST imports, older tools) leave it undeclared - the WIKI
      * default locale decides, so a request naming the wiki default is served as a default-language
      * access instead of fabricating a translation row next to the default one. Shared by the read side
-     * ({@code get_document}) and the write side ({@link #resolveWriteTarget}) so the two cannot drift.
+     * ({@link MCPTranslationSupport}) and the write side ({@link #resolveWriteTarget}) so the two
+     * cannot drift.
      *
      * @param xcontext the XWiki context, switched to the target wiki
      * @param defaultDoc the loaded default document

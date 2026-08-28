@@ -25,7 +25,6 @@ import java.util.Map;
 
 import javax.inject.Inject;
 import javax.inject.Named;
-import javax.inject.Provider;
 import javax.inject.Singleton;
 
 import org.apache.commons.lang3.StringUtils;
@@ -45,7 +44,6 @@ import org.xwiki.model.reference.EntityReferenceSerializer;
 import org.xwiki.model.reference.WikiReference;
 import org.xwiki.security.authorization.Right;
 
-import com.xpn.xwiki.XWikiContext;
 import com.xpn.xwiki.XWikiException;
 import com.xpn.xwiki.doc.XWikiDocument;
 
@@ -106,9 +104,9 @@ public class MCPGetHistoryTool implements MCPTool
 
     private static final String PERIOD = ".";
 
-    private static final String DASH = "-";
+    private static final String DASH = MCPContentWindow.DASH;
 
-    private static final String OF_INFIX = " of ";
+    private static final String OF_INFIX = MCPContentWindow.OF_INFIX;
 
     /**
      * The list-mode page size when {@code limit} is omitted.
@@ -158,14 +156,7 @@ public class MCPGetHistoryTool implements MCPTool
      * The offset-assignment fragment closing the continuation hints, directly followed by the offset
      * value.
      */
-    private static final String OFFSET_EQUALS = OFFSET_PARAM + "=";
-
-    /**
-     * Opens the truncation note of a version-mode content window cut at the output budget, completed
-     * by the continuation offset; the wording follows the {@code get_document} continuation note.
-     */
-    private static final String CONTINUATION_PREFIX = " Output truncated at the ~"
-        + MCPSourceText.MAX_OUTPUT_TOKENS + "-token cap; continue with " + OFFSET_EQUALS;
+    private static final String OFFSET_EQUALS = MCPContentWindow.OFFSET_EQUALS;
 
     /**
      * The self-correction hint shared by the two diff truncation notes, so their advice cannot drift
@@ -229,13 +220,13 @@ public class MCPGetHistoryTool implements MCPTool
     private EntityReferenceSerializer<String> serializer;
 
     @Inject
-    private Provider<XWikiContext> contextProvider;
-
-    @Inject
     private MCPWikiReach wikiReach;
 
     @Inject
     private MCPHistorySupport historySupport;
+
+    @Inject
+    private MCPTranslationSupport translationSupport;
 
     /**
      * Builds the declared parameter set, using a wiki-prefixed reference example, the cross-wiki
@@ -384,17 +375,14 @@ public class MCPGetHistoryTool implements MCPTool
         }
         XWikiDocument xdoc = loadDocument(ref, reference);
         Locale translationLocale = null;
-        if (requestedLocale != null && !isDefaultLanguageRequest(xdoc, requestedLocale)) {
-            // The locale attaches to loads only: authorization above used the locale-free reference,
-            // since a document's translations share its rights and the security cache is keyed on
-            // parameter-free references.
-            DocumentReference localizedRef = new DocumentReference(ref, requestedLocale);
-            if (!documentExists(localizedRef, reference)) {
-                return MCPToolSupport.errorResult(missingTranslationMessage(ref, xdoc, requestedLocale));
-            }
-            ref = localizedRef;
-            xdoc = loadDocument(localizedRef, reference);
-            translationLocale = requestedLocale;
+        if (requestedLocale != null) {
+            // Authorization above used the locale-free reference; the shared resolver routes the
+            // locale to the addressed language row (see MCPTranslationSupport).
+            MCPTranslationSupport.TranslationTarget target =
+                this.translationSupport.resolve(ref, xdoc, requestedLocale, reference);
+            ref = target.reference();
+            xdoc = target.document();
+            translationLocale = target.locale();
         }
         return dispatch(xdoc, ref, translationLocale, mode);
     }
@@ -718,9 +706,10 @@ public class MCPGetHistoryTool implements MCPTool
     }
 
     /**
-     * Composes the version-mode content window below the banner, mirroring the {@code get_document}
-     * range-read mechanics: line-numbered output, the shown-lines footer, the continuation hint on a
-     * budget cut and a clear refusal on an offset past the last line.
+     * Composes the version-mode content window below the banner, sharing the {@code get_document}
+     * range-read mechanics through {@link MCPContentWindow}: line-numbered output, the shown-lines
+     * footer, the continuation hint on a budget cut and a clear refusal on an offset past the last
+     * line.
      *
      * @param banner the historical-snapshot banner
      * @param content the revision's content, line endings normalized
@@ -739,35 +728,9 @@ public class MCPGetHistoryTool implements MCPTool
             return MCPToolSupport.errorResult("offset " + start + " exceeds this revision's length ("
                 + totalLines + " lines). Use an offset of at most " + totalLines + PERIOD);
         }
-        int end = cappedEnd(lines, start, totalLines);
-        String footer = "Showing lines " + start + DASH + end + OF_INFIX + totalLines + PERIOD;
-        if (end < totalLines) {
-            footer += CONTINUATION_PREFIX + (end + 1) + PERIOD;
-        }
+        int end = MCPContentWindow.cappedEnd(lines, start, totalLines, MCPSourceText.MAX_OUTPUT_CHARS);
         return MCPToolSupport.result(banner + DOUBLE_NEW_LINE + MCPSourceText.numberedLines(lines, start, end)
-            + NEW_LINE + footer);
-    }
-
-    /**
-     * Returns the largest line index in {@code [start..requestedEnd]} whose cumulative character count
-     * (including a newline per line) stays within the output budget. Always returns at least
-     * {@code start}, so a single oversized line is emitted whole rather than cut mid-line.
-     *
-     * @param lines the content lines
-     * @param start the 1-based first line to emit
-     * @param requestedEnd the 1-based last line
-     * @return the 1-based capped end line index
-     */
-    private static int cappedEnd(String[] lines, int start, int requestedEnd)
-    {
-        long total = 0;
-        for (int i = start; i <= requestedEnd; i++) {
-            total += (long) lines[i - 1].length() + 1;
-            if (total > MCPSourceText.MAX_OUTPUT_CHARS && i > start) {
-                return i - 1;
-            }
-        }
-        return requestedEnd;
+            + NEW_LINE + MCPContentWindow.footer(start, end, totalLines, totalLines));
     }
 
     /**
@@ -834,67 +797,6 @@ public class MCPGetHistoryTool implements MCPTool
     private String canonical(DocumentReference ref)
     {
         return MCPToolSupport.stripLineBreaks(this.serializer.serialize(ref));
-    }
-
-    /**
-     * Tests whether the requested locale designates the default-language version of the loaded default
-     * document, delegating to the predicate shared with the write tools and {@code get_document} so
-     * the tools cannot drift. The default row stores an empty language, so a per-translation existence
-     * probe for e.g. "en" on an English-default page would falsely refuse; such a request is served as
-     * a default-row history read instead.
-     *
-     * @param xdoc the loaded default document
-     * @param locale the requested locale
-     * @return whether the request addresses the default language row
-     */
-    private boolean isDefaultLanguageRequest(XWikiDocument xdoc, Locale locale)
-    {
-        return MCPWriteSupport.isDefaultLanguageRequest(this.contextProvider.get(), xdoc, locale);
-    }
-
-    /**
-     * Builds the missing-translation refusal, listing the translations that do exist so the agent can
-     * correct the call instead of retrying blindly.
-     *
-     * @param ref the resolved locale-free document reference
-     * @param xdoc the loaded default document
-     * @param locale the requested locale that has no stored translation
-     * @return the agent-facing error message
-     */
-    private String missingTranslationMessage(DocumentReference ref, XWikiDocument xdoc, Locale locale)
-    {
-        List<Locale> translations = translationLocalesOf(xdoc);
-        String existing;
-        if (translations.isEmpty()) {
-            existing = "This document has no translations.";
-        } else {
-            existing = "Translations: " + String.join(", ",
-                translations.stream().map(item -> MCPToolSupport.stripLineBreaks(item.toString())).toList())
-                + PERIOD;
-        }
-        // The requested locale is echoed stripped: a validated Locale can still carry line breaks in
-        // its variant segment, which would otherwise forge extra response lines.
-        return "Error: no " + QUOTE + MCPToolSupport.stripLineBreaks(locale.toString()) + QUOTE
-            + " translation of " + QUOTE + canonical(ref) + QUOTE + PERIOD + ' ' + existing
-            + " Omit '" + LOCALE_PARAM + "' for the default version.";
-    }
-
-    /**
-     * Lists the document's translation locales (the platform list excludes the default language),
-     * degrading to an empty list on a lookup failure so a discovery nicety can never break a read.
-     *
-     * @param xdoc the loaded document
-     * @return the translation locales, or an empty list
-     */
-    private List<Locale> translationLocalesOf(XWikiDocument xdoc)
-    {
-        try {
-            List<Locale> translations = xdoc.getTranslationLocales(this.contextProvider.get());
-            return translations != null ? translations : List.of();
-        } catch (Exception e) {
-            this.logger.debug("MCP get_history tool translation-locale lookup failed", e);
-            return List.of();
-        }
     }
 
     /**

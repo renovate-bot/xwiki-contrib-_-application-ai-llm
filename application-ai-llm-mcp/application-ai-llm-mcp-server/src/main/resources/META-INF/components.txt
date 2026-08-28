@@ -15,6 +15,7 @@ org.xwiki.contrib.llm.mcp.internal.tool.MCPGetHistoryTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPHistorySupport
 org.xwiki.contrib.llm.mcp.internal.tool.MCPGetLinksTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPLinksSupport
+org.xwiki.contrib.llm.mcp.internal.tool.MCPTranslationSupport
 org.xwiki.contrib.llm.mcp.internal.tool.MCPEditDocumentTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPWriteDocumentTool
 org.xwiki.contrib.llm.mcp.internal.tool.MCPDeleteDocumentTool

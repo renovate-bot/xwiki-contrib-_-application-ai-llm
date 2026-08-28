@@ -85,10 +85,11 @@ import io.modelcontextprotocol.spec.McpSchema;
 @Component
 @Named(MCPGetDocumentTool.TOOL_ID)
 @Singleton
-// The locale parameter (LLMAI-160) adds java.util.Locale as the 21st referenced type (measured 21/20)
-// on the module's largest composition-root tool (7 collaborators, 3 response families); suppressed
-// rather than hiding the default-language short-circuit (shared with the write tools via
-// MCPWriteSupport) behind a seam for a one-type overshoot.
+// The module's largest composition-root tool (8 injected collaborators, 3 response families), measured
+// 23/20. Three of the counted types are the shared seams themselves - MCPTranslationSupport with its
+// TranslationTarget record, and MCPContentWindow - which exist exactly so the read tools cannot drift
+// apart on translation routing and window grammar; suppressed rather than hiding them behind a
+// pass-through layer that would add indirection without removing any real dependency.
 @SuppressWarnings("checkstyle:ClassFanOutComplexity")
 public class MCPGetDocumentTool implements MCPTool
 {
@@ -116,17 +117,6 @@ public class MCPGetDocumentTool implements MCPTool
      * Sentence terminator of the composed message texts, shared with {@link MCPRenderedHtmlResponses}.
      */
     static final String PERIOD = ".";
-
-    /**
-     * Range separator of the shown-lines and shown-chunks texts, shared with
-     * {@link MCPRenderedHtmlResponses}.
-     */
-    static final String DASH = "-";
-
-    /**
-     * Infix of the x-of-y range texts, shared with {@link MCPRenderedHtmlResponses}.
-     */
-    static final String OF_INFIX = " of ";
 
     /**
      * Body of a read whose emitted content is empty, shared by the source and rendered-HTML paths.
@@ -206,8 +196,7 @@ public class MCPGetDocumentTool implements MCPTool
     private static final String LIST_SEPARATOR = ", ";
 
     /**
-     * Prefix shared by the {@code Translations:} header line and the translation list of the
-     * missing-translation error.
+     * Prefix of the {@code Translations:} header line.
      */
     private static final String TRANSLATIONS_PREFIX = "Translations: ";
 
@@ -230,8 +219,6 @@ public class MCPGetDocumentTool implements MCPTool
     private static final String READ_WITH_RANGE_HINT = "; read with offset/limit.";
 
     private static final String COULD_NOT_READ_PREFIX = "Could not read the document ";
-
-    private static final String SHOWING_LINES_PREFIX = "Showing lines 1-";
 
     private static final String VIEW_ACTION = "view";
 
@@ -262,11 +249,6 @@ public class MCPGetDocumentTool implements MCPTool
             + "format=\"html\" instead: links, code blocks and tables keep their structure there, and a "
             + "link whose target does not exist is marked with the wikicreatelink class."
             + RENDERED_BANNER_TAIL;
-
-    private static final String OFFSET_EQUALS = OFFSET_PARAM + "=";
-
-    private static final String CONTINUATION_PREFIX = " Output truncated at the ~" + MAX_OUTPUT_TOKENS
-        + "-token cap; continue with " + OFFSET_EQUALS;
 
     /**
      * The two declared-parameter variants (see {@link MCPReachAwareParams}): the local variant drops the
@@ -401,6 +383,9 @@ public class MCPGetDocumentTool implements MCPTool
 
     @Inject
     private SheetManager sheetManager;
+
+    @Inject
+    private MCPTranslationSupport translationSupport;
 
     /**
      * Builds the declared parameter set, using a wiki-prefixed reference example and the cross-wiki sentence in
@@ -548,140 +533,18 @@ public class MCPGetDocumentTool implements MCPTool
             }
 
             DocumentModelBridge doc = loadDocument(ref, reference);
-            if (requestedLocale != null && !isDefaultLanguageRequest(doc, requestedLocale)) {
-                // The locale attaches to loads only: authorization above used the locale-free reference,
-                // since a document's translations share its rights and the security cache is keyed on
-                // parameter-free references.
-                DocumentReference localizedRef = new DocumentReference(ref, requestedLocale);
-                if (!documentExists(localizedRef, reference)) {
-                    return MCPToolSupport.errorResult(missingTranslationMessage(ref, doc, requestedLocale));
-                }
-                ref = localizedRef;
-                doc = loadDocument(localizedRef, reference);
+            if (requestedLocale != null) {
+                // Authorization above used the locale-free reference; the shared resolver routes the
+                // locale to the addressed language row (see MCPTranslationSupport).
+                MCPTranslationSupport.TranslationTarget target =
+                    this.translationSupport.resolve(ref, doc, requestedLocale, reference);
+                ref = target.reference();
+                doc = target.document();
             }
             return read(args, ref, reference, doc);
         } catch (IllegalArgumentException e) {
             return MCPToolSupport.errorResult(e.getMessage());
         }
-    }
-
-    /**
-     * Tests whether the requested locale designates the default-language version of the loaded default
-     * document, delegating to the predicate shared with the write side
-     * ({@link MCPWriteSupport#isDefaultLanguageRequest(XWikiContext, XWikiDocument, Locale)}) so read
-     * and write cannot drift. The default row stores an empty language, so a per-translation existence
-     * probe for e.g. "en" on an English-default page would falsely refuse; such a request is served as
-     * a plain default read instead. Non-existent documents never reach this predicate: the read path
-     * returns not-found before any locale handling.
-     *
-     * @param doc the loaded default document
-     * @param locale the requested locale
-     * @return whether the request is a default-language read
-     */
-    private boolean isDefaultLanguageRequest(DocumentModelBridge doc, Locale locale)
-    {
-        return doc instanceof XWikiDocument xdoc
-            && MCPWriteSupport.isDefaultLanguageRequest(this.contextProvider.get(), xdoc, locale);
-    }
-
-    /**
-     * Builds the missing-translation refusal, listing the translations that do exist and the default
-     * language so the agent can correct the call instead of retrying blindly.
-     *
-     * @param ref the resolved locale-free document reference
-     * @param doc the loaded default document
-     * @param locale the requested locale that has no stored translation
-     * @return the agent-facing error message
-     */
-    private String missingTranslationMessage(DocumentReference ref, DocumentModelBridge doc, Locale locale)
-    {
-        String canonicalRef = MCPToolSupport.stripLineBreaks(this.serializer.serialize(ref));
-        List<Locale> translations = translationLocalesOf(doc);
-        String existing = translations.isEmpty() ? "This document has no translations."
-            : TRANSLATIONS_PREFIX + joinLocales(translations) + PERIOD;
-        // The requested locale is echoed stripped: a validated Locale can still carry line breaks in
-        // its variant segment, which would otherwise forge extra response lines.
-        String message = "Error: no " + QUOTE + MCPToolSupport.stripLineBreaks(locale.toString()) + QUOTE
-            + " translation of " + QUOTE + canonicalRef + QUOTE + PERIOD + ' ' + existing;
-        String defaultDisplay = defaultLocaleDisplay(doc);
-        if (defaultDisplay != null) {
-            message += " The default language is " + defaultDisplay + PERIOD;
-        }
-        return message + " Omit '" + LOCALE_PARAM + "' for the default version.";
-    }
-
-    /**
-     * Lists the document's translation locales (the platform list excludes the default language),
-     * degrading to an empty list on a lookup failure so a discovery nicety can never break a read.
-     *
-     * @param doc the loaded document
-     * @return the translation locales, or an empty list
-     */
-    private List<Locale> translationLocalesOf(DocumentModelBridge doc)
-    {
-        if (!(doc instanceof XWikiDocument xdoc)) {
-            return List.of();
-        }
-        try {
-            List<Locale> translations = xdoc.getTranslationLocales(this.contextProvider.get());
-            return translations != null ? translations : List.of();
-        } catch (Exception e) {
-            this.logger.debug("MCP get_document tool translation-locale lookup failed", e);
-            return List.of();
-        }
-    }
-
-    /**
-     * Resolves the page's EFFECTIVE default language: the declared default locale, or the wiki's
-     * default when the row's is ROOT (undeclared - programmatic creation skips the UI's stamp). The
-     * wiki fallback matches {@link MCPWriteSupport#isDefaultLanguageRequest}: whatever this method
-     * names is exactly what an omitted or equal {@code locale} routes to. Never fall back to the
-     * row's real locale - on a translation row (whose default locale is always ROOT) that would
-     * name the translation's own language as the page default.
-     *
-     * @param doc the loaded document
-     * @return the effective default locale, or {@code null} when the document does not expose its
-     *     locale
-     */
-    private Locale defaultLocaleOf(DocumentModelBridge doc)
-    {
-        if (!(doc instanceof XWikiDocument xdoc)) {
-            return null;
-        }
-        Locale defaultLocale = xdoc.getDefaultLocale();
-        if (defaultLocale == null || Locale.ROOT.equals(defaultLocale)) {
-            XWikiContext xcontext = this.contextProvider.get();
-            return xcontext.getWiki().getDefaultLocale(xcontext);
-        }
-        return defaultLocale;
-    }
-
-    /**
-     * @param doc the loaded document
-     * @return the display form of the page's effective default language, stripped of line breaks, or
-     *     {@code null} when the document does not expose its locale, so the caller can drop the
-     *     mention instead of printing a dangling empty value
-     */
-    private String defaultLocaleDisplay(DocumentModelBridge doc)
-    {
-        Locale defaultLocale = defaultLocaleOf(doc);
-        if (defaultLocale == null || defaultLocale.toString().isEmpty()) {
-            return null;
-        }
-        return MCPToolSupport.stripLineBreaks(defaultLocale.toString());
-    }
-
-    /**
-     * Joins the locale identifiers with the list separator, stripping line breaks from each: a stored
-     * locale can carry them in its variant segment and must not forge extra response lines.
-     *
-     * @param locales the locales to list
-     * @return the comma-joined locale identifiers
-     */
-    private static String joinLocales(List<Locale> locales)
-    {
-        return String.join(LIST_SEPARATOR,
-            locales.stream().map(locale -> MCPToolSupport.stripLineBreaks(locale.toString())).toList());
     }
 
     /**
@@ -1200,11 +1063,12 @@ public class MCPGetDocumentTool implements MCPTool
         if (!headings.isEmpty()) {
             return LARGE_DOC_OUTLINE_WARNING + NEW_LINE + String.join(NEW_LINE, headings);
         }
-        int headEnd = cappedEnd(lines, 1, totalLines, MAX_OUTPUT_CHARS);
+        int headEnd = MCPContentWindow.cappedEnd(lines, 1, totalLines, MAX_OUTPUT_CHARS);
         String body = numberedBody(lines, 1, headEnd);
-        String footer = SHOWING_LINES_PREFIX + headEnd + OF_INFIX + totalLines + PERIOD;
+        String footer = MCPContentWindow.showingLines(1, headEnd, totalLines);
         if (headEnd < totalLines) {
-            footer += " Large document with no headings; continue with " + OFFSET_EQUALS + (headEnd + 1) + PERIOD;
+            footer += " Large document with no headings; continue with " + MCPContentWindow.OFFSET_EQUALS
+                + (headEnd + 1) + PERIOD;
         }
         return body + NEW_LINE + footer;
     }
@@ -1226,37 +1090,10 @@ public class MCPGetDocumentTool implements MCPTool
         }
         long endLong = (limit != null) ? Math.min((long) start + limit - 1, totalLines) : totalLines;
         int end = (int) endLong;
-        int actualEnd = cappedEnd(lines, start, end, MAX_OUTPUT_CHARS);
-        boolean truncated = actualEnd < end;
+        int actualEnd = MCPContentWindow.cappedEnd(lines, start, end, MAX_OUTPUT_CHARS);
         String body = numberedBody(lines, start, actualEnd);
-        String footer = "Showing lines " + start + DASH + actualEnd + OF_INFIX + totalLines + PERIOD;
-        if (truncated) {
-            footer += CONTINUATION_PREFIX + (actualEnd + 1) + PERIOD;
-        }
+        String footer = MCPContentWindow.footer(start, actualEnd, end, totalLines);
         return MCPToolSupport.result(header + DOUBLE_NEW_LINE + body + NEW_LINE + footer);
-    }
-
-    /**
-     * Returns the largest line index in {@code [start..requestedEnd]} whose cumulative character count
-     * (including a newline per line) does not exceed {@code maxChars}. Always returns at least {@code start},
-     * so a single oversized line is emitted whole rather than truncated mid-line, preserving edit-ability.
-     *
-     * @param lines the document lines
-     * @param start the 1-based first line to emit
-     * @param requestedEnd the 1-based last line the caller asked for
-     * @param maxChars the cumulative character budget for the emitted window
-     * @return the 1-based capped end line index
-     */
-    private int cappedEnd(String[] lines, int start, int requestedEnd, int maxChars)
-    {
-        long total = 0;
-        for (int i = start; i <= requestedEnd; i++) {
-            total += (long) lines[i - 1].length() + 1;
-            if (total > maxChars && i > start) {
-                return i - 1;
-            }
-        }
-        return requestedEnd;
     }
 
     private String buildHeader(String referenceBlock, String title, String syntaxId, String version,
@@ -1298,8 +1135,9 @@ public class MCPGetDocumentTool implements MCPTool
      * breaks (a stored locale's variant segment can carry them). The {@code Language:} line names only
      * a DECLARED content language - an undeclared (ROOT) real locale omits the line, because claiming
      * a language the row never declared would be a guess. The {@code (default: X)} suffix instead
-     * names the page's EFFECTIVE default ({@link #defaultLocaleOf}): it states what an omitted
-     * {@code locale} routes to, which the wiki-default fallback makes true even for undeclared rows.
+     * names the page's EFFECTIVE default ({@link MCPTranslationSupport#defaultLocaleOf}): it states
+     * what an omitted {@code locale} routes to, which the wiki-default fallback makes true even for
+     * undeclared rows.
      *
      * @param doc the loaded document
      * @return the language block, possibly empty
@@ -1313,10 +1151,10 @@ public class MCPGetDocumentTool implements MCPTool
         if (!Locale.ROOT.equals(xdoc.getRealLocale())) {
             block = "Language: " + MCPToolSupport.stripLineBreaks(xdoc.getRealLocale().toString()) + NEW_LINE;
         }
-        List<Locale> translations = translationLocalesOf(doc);
+        List<Locale> translations = this.translationSupport.translationLocalesOf(doc);
         if (!translations.isEmpty()) {
-            block += TRANSLATIONS_PREFIX + joinLocales(translations);
-            String defaultDisplay = defaultLocaleDisplay(doc);
+            block += TRANSLATIONS_PREFIX + MCPTranslationSupport.joinLocales(translations);
+            String defaultDisplay = this.translationSupport.defaultLocaleDisplay(doc);
             if (defaultDisplay != null) {
                 block += " (default: " + defaultDisplay + ")";
             }

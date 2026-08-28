@@ -150,6 +150,9 @@ public class MCPLinksSupport
     @Inject
     private Provider<XWikiContext> contextProvider;
 
+    @Inject
+    private MCPTranslationSupport translationSupport;
+
     /**
      * @param reference a resolved document reference
      * @return its full serialized form, neutralized for the line grammar (the header form of the tool)
@@ -232,11 +235,11 @@ public class MCPLinksSupport
     }
 
     /**
-     * Routes a {@code locale} argument to the addressed translation for an outgoing-link read,
-     * mirroring the exact-match semantics of {@code get_document}/{@code get_history}: a locale naming
-     * the default language answers the locale-free reference, a stored translation answers the
-     * locale-carrying reference, and a missing translation is refused with the translations that do
-     * exist.
+     * Routes a {@code locale} argument to the addressed translation for an outgoing-link read through
+     * the shared resolver ({@link MCPTranslationSupport}), with the exact-match semantics of
+     * {@code get_document}/{@code get_history}: a locale naming the default language answers the
+     * locale-free reference, a stored translation answers the locale-carrying reference, and a missing
+     * translation is refused with the translations that do exist and the default language.
      *
      * @param reference the resolved locale-free document reference
      * @param locale the validated {@code locale} argument
@@ -249,14 +252,7 @@ public class MCPLinksSupport
     public DocumentReference resolveTranslation(DocumentReference reference, Locale locale, String rawReference)
     {
         XWikiDocument document = loadDocument(reference, rawReference);
-        if (MCPWriteSupport.isDefaultLanguageRequest(this.contextProvider.get(), document, locale)) {
-            return reference;
-        }
-        DocumentReference localizedRef = new DocumentReference(reference, locale);
-        if (!documentExists(localizedRef, rawReference)) {
-            throw new IllegalArgumentException(missingTranslationMessage(reference, document, locale));
-        }
-        return localizedRef;
+        return this.translationSupport.resolve(reference, document, locale, rawReference).reference();
     }
 
     /**
@@ -463,51 +459,6 @@ public class MCPLinksSupport
         }
         throw new IllegalArgumentException(COULD_NOT_READ_PREFIX + QUOTE
             + MCPTextGuards.fragment(rawReference) + QUOTE + PERIOD);
-    }
-
-    /**
-     * Builds the missing-translation refusal, listing the translations that do exist so the agent can
-     * correct the call instead of retrying blindly.
-     *
-     * @param reference the resolved locale-free document reference
-     * @param document the loaded default document
-     * @param locale the requested locale that has no stored translation
-     * @return the agent-facing error message
-     */
-    private String missingTranslationMessage(DocumentReference reference, XWikiDocument document, Locale locale)
-    {
-        List<Locale> translations = translationLocalesOf(document);
-        String existing;
-        if (translations.isEmpty()) {
-            existing = "This document has no translations.";
-        } else {
-            existing = "Translations: " + String.join(", ",
-                translations.stream().map(item -> MCPToolSupport.stripLineBreaks(item.toString())).toList())
-                + PERIOD;
-        }
-        // The requested locale is echoed stripped: a validated Locale can still carry line breaks in
-        // its variant segment, which would otherwise forge extra response lines.
-        return "Error: no " + QUOTE + MCPToolSupport.stripLineBreaks(locale.toString()) + QUOTE
-            + " translation of " + QUOTE + canonical(reference) + QUOTE + PERIOD
-            + " " + existing + " Omit 'locale' for the default version.";
-    }
-
-    /**
-     * Lists the document's translation locales (the platform list excludes the default language),
-     * degrading to an empty list on a lookup failure so a discovery nicety can never break a read.
-     *
-     * @param document the loaded document
-     * @return the translation locales, or an empty list
-     */
-    private List<Locale> translationLocalesOf(XWikiDocument document)
-    {
-        try {
-            List<Locale> translations = document.getTranslationLocales(this.contextProvider.get());
-            return translations != null ? translations : List.of();
-        } catch (Exception e) {
-            this.logger.debug("MCP get_links tool translation-locale lookup failed", e);
-            return List.of();
-        }
     }
 
     /**

@@ -103,9 +103,9 @@ final class MCPRenderedHtmlResponses
 
     private static final String PERIOD = MCPGetDocumentTool.PERIOD;
 
-    private static final String DASH = MCPGetDocumentTool.DASH;
+    private static final String DASH = MCPContentWindow.DASH;
 
-    private static final String OF_INFIX = MCPGetDocumentTool.OF_INFIX;
+    private static final String OF_INFIX = MCPContentWindow.OF_INFIX;
 
     private static final String NO_CONTENT_BODY = MCPGetDocumentTool.NO_CONTENT_BODY;
 

@@ -47,6 +47,7 @@ import org.xwiki.rendering.syntax.Syntax;
 import org.xwiki.security.authorization.Right;
 import org.xwiki.sheet.SheetManager;
 import org.xwiki.test.LogLevel;
+import org.xwiki.test.annotation.ComponentList;
 import org.xwiki.test.junit5.LogCaptureExtension;
 import org.xwiki.test.junit5.mockito.ComponentTest;
 import org.xwiki.test.junit5.mockito.InjectMockComponents;
@@ -85,6 +86,7 @@ import static org.xwiki.contrib.llm.mcp.internal.tool.MCPToolTestUtils.textOf;
  */
 @ComponentTest
 @DefaultHTMLCleanerComponentList
+@ComponentList(MCPTranslationSupport.class)
 class MCPGetDocumentToolTest extends AbstractMCPToolTest
 {
     private static final String REFERENCE_KEY = "reference";

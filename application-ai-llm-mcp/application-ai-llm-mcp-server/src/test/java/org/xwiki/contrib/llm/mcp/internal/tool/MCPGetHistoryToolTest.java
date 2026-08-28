@@ -84,8 +84,8 @@ import static org.xwiki.contrib.llm.mcp.internal.tool.MCPToolTestUtils.textOf;
  * @version $Id$
  */
 @ComponentTest
-@ComponentList({MCPHistorySupport.class, DefaultDiffManager.class, LineSplitter.class,
-    DefaultUnifiedDiffDisplayer.class, DefaultInlineDiffDisplayer.class})
+@ComponentList({MCPHistorySupport.class, MCPTranslationSupport.class, DefaultDiffManager.class,
+    LineSplitter.class, DefaultUnifiedDiffDisplayer.class, DefaultInlineDiffDisplayer.class})
 class MCPGetHistoryToolTest extends AbstractMCPToolTest
 {
     private static final String REFERENCE_KEY = "reference";
@@ -650,6 +650,21 @@ class MCPGetHistoryToolTest extends AbstractMCPToolTest
         assertTrue(text.contains("no \"fr\" translation of \"" + CANONICAL + "\""), text);
         assertTrue(text.contains("Translations: de, it."), text);
         assertTrue(text.contains("Omit 'locale' for the default version."), text);
+    }
+
+    @Test
+    void localeMissNamesTheDefaultLanguage() throws Exception
+    {
+        XWikiDocument doc = stubDocument("1.1", "");
+        when(doc.getRealLocale()).thenReturn(Locale.ENGLISH);
+        when(doc.getDefaultLocale()).thenReturn(Locale.ENGLISH);
+        DocumentReference frRef = new DocumentReference(DOC_REF, Locale.FRENCH);
+        when(this.documentAccessBridge.exists(frRef)).thenReturn(false);
+
+        McpSchema.CallToolResult result = call(Map.of(REFERENCE_KEY, REF, LOCALE_KEY, "fr"));
+
+        assertEquals(Boolean.TRUE, result.isError());
+        assertTrue(textOf(result).contains("The default language is en."), textOf(result));
     }
 
     @Test
