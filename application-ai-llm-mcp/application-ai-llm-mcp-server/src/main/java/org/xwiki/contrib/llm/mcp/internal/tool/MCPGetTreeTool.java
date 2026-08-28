@@ -102,6 +102,12 @@ public class MCPGetTreeTool implements MCPTool
     public static final String TOOL_ID = "get_tree";
 
     /**
+     * The header suffix stating hidden pages are part of the listing. Shared with {@code get_links}
+     * (its count line mirrors this header convention), so the two tools cannot drift apart.
+     */
+    static final String HIDDEN_INCLUDED = ", hidden included";
+
+    /**
      * Global cap on the number of rendered nodes in one explore response, so a broad root cannot flood the
      * context window. Descent stops once this many nodes have been accepted.
      */
@@ -280,8 +286,6 @@ public class MCPGetTreeTool implements MCPTool
     private static final String HIDDEN_SUFFIX = " hidden";
 
     private static final String BRANCHES_TRUNCATED = " branches truncated";
-
-    private static final String HIDDEN_INCLUDED = ", hidden included";
 
     private static final String SAMPLED_NOTE =
         ", counts sampled from the first " + MAX_FETCH_PER_QUERY + PAGES_SUFFIX;

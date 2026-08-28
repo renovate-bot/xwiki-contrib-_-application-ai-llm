@@ -111,11 +111,11 @@ public class MCPGetLinksTool implements MCPTool
     private static final String FLOOR_MARK = "+";
 
     /**
-     * The count-line suffix of a hidden-including backlink list, in {@code get_tree}'s header style:
-     * it replaces the {@code (+N hidden)} count, since the hidden rows are then listed (marked) in the
-     * list itself.
+     * The count-line suffix of a hidden-including backlink list: it replaces the {@code (+N hidden)}
+     * count, since the hidden rows are then listed (marked) in the list itself. The wording is
+     * {@code get_tree}'s header suffix, referenced so the two tools cannot drift apart.
      */
-    private static final String HIDDEN_INCLUDED = ", hidden included";
+    private static final String HIDDEN_INCLUDED = MCPGetTreeTool.HIDDEN_INCLUDED;
 
     /**
      * The backlink page size when {@code limit} is omitted.
@@ -648,8 +648,9 @@ public class MCPGetLinksTool implements MCPTool
     }
 
     /**
-     * Picks the note below a zero-row heading: hidden-only backlinks are stated as a count (never
-     * listed), an empty uncapped answer carries the indexing teaching note, and a capped answer with
+     * Picks the note below a zero-row heading: hidden-only backlinks are stated as a count when hidden
+     * pages are not requested (with {@code showHidden} they appear as rows, so this branch never
+     * fires), an empty uncapped answer carries the indexing teaching note, and a capped answer with
      * nothing visible needs no note here - the ceiling note follows the section.
      *
      * @param page the authorized backlink page
